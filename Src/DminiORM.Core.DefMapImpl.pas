@@ -1,8 +1,24 @@
+{   Copyright 2012 - Juan Luis Rozano (jlrozano@gmail.com)
+
+    This file is part of DminiORM
+
+    DminiORM is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as
+    published by the Free Software Foundation, either version 3 of
+    the License, or (at your option) any later version.
+
+    DminiOrm is distributed WITHOUT ANY WARRANTY; without even the
+    implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+    See the GNU Lesser General Public License for more details.
+    <http://www.gnu.org/licenses/>.
+
+}
 unit DminiORM.Core.DefMapImpl;
 
 interface
 
-uses DminiORM.Core, Rtti, Generics.Collections, TypInfo, SysUtils;
+uses DminiORM.Core, Rtti, Generics.Collections, TypInfo, SysUtils,
+  DminiORM.Core.Factory;
 
 type
 

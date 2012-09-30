@@ -1,3 +1,18 @@
+{ Copyright 2012 - Juan Luis Rozano (jlrozano@gmail.com)
+
+  This file is part of DminiORM
+
+  DminiORM is free software: you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as
+  published by the Free Software Foundation, either version 3 of
+  the License, or (at your option) any later version.
+
+  DminiOrm is distributed WITHOUT ANY WARRANTY; without even the
+  implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+  See the GNU Lesser General Public License for more details.
+  <http://www.gnu.org/licenses/>.
+
+}
 unit DminiORM.Core;
 
 interface
@@ -30,6 +45,7 @@ type
     ProperyName: String;
     ColumnName: String;
     IsKeyField: Boolean;
+    IsDetailField: Boolean;
     OldValue: TValue;
     NewValue: TValue;
     function Modified: Boolean;
@@ -41,6 +57,7 @@ type
 
   TORMObjectStatus = record
     State: TObjectState;
+    EnitityName: String;
     Fields: TORMFields;
     function ModifiedFields: TORMFields;
     function IsModified: Boolean;
@@ -50,7 +67,7 @@ type
   IDataWriter = interface
     ['{D10FA8DD-0838-4836-88E0-A9351739CA6C}']
     function Save(Records: TArray<TORMObjectStatus>): TArray<TDataRow>;
-    procedure Delete(RecKeys: TArray<TORMFields>);
+    procedure Delete(RecKeys: TArray<TORMObjectStatus>);
   end;
 
   TParameter = TColumn;
@@ -132,27 +149,33 @@ type
   // procedure Delete(AKey: TValue);
   // end;
 
-  TORMBase = class;
-
-  ILoadDelegate<T: class> = Interface
+    ILoadDelegate = Interface
     ['{D9DB705C-DB5D-433A-901D-88E9EF631CEF}']
-    procedure Put(const Value: T);
-    function Get: T;
+    procedure Put(const Value: TValue);
+    function Get: TValue;
+    procedure SetRelation(RelationAddr: pointer;
+      RelationResultTypeInfo: PTypeInfo);
+    function AsObject: TInterfacedObject;
   End;
+
+  RelationRec = record
+    Delegate: ILoadDelegate;
+    Owner: TObject;
+    DetailColumns: TArray<TRelationShipInfo>;
+    DataReader: IDataReader;
+  end;
+
+  PRelationRec = ^RelationRec;
 
   Relation<T: class> = record
   private
     {
       LoadDelegate es necesario para que la lista con los objetos se libere de
       forma automática cuando se pierda la referencia. De otra forma, sería
-      necesario que en el destructor de la clase, liberara de forma explicita
+      necesario que en el destructor de la clase, se liberara de forma explicita
       este objeto.
     }
-    LoadDelegate: ILoadDelegate<T>;
-    Owner: TObject;
-    Orm: TORMBase;
-    DetailColumns: TArray<TRelationShipInfo>;
-    DataReader: IDataReader;
+    Rec: RelationRec;
     procedure Initialize;
   public
     function Get: T;
@@ -160,82 +183,48 @@ type
     class operator Implicit(const Value: T): Relation<T>;
   end;
 
-  RealtionRec = record
-    Delegate: IInterface;
-    Owner: TObject;
-    Orm: TORMBase;
-    DetailColumns: TArray<TRelationShipInfo>;
-    DataReader: IDataReader;
+  IORM = Interface
+    ['{6CC8D453-528B-407D-BE65-D1D8FD4A71ED}']
+    function Load(ATypeInfo: PTypeInfo; AProvider: String;
+      Parameters: TArray<TParameter>): TValue; overload;
+    function Load(ATypeInfo: PTypeInfo; AKeyValues: Array of const): TValue; overload;
+    procedure Save(AValue: TValue);
+    procedure Delete(AValue: TValue);
+    function AsObject: TInterfacedObject;
+  End;
+
+  TORM = class
+    class function Load<T>(AProviderName: String; AParameters: TArray<TParameter>): T; overload;
+    class function Load<T>(AParameters: TArray<TParameter>): T; overload;
+    class function Load<T>(AKeyValues: Array of const): T; overload;
+    class procedure Save<T>(AValue: T);
+    class procedure Delete<T>(AValue: T);
   end;
 
-  PRelationRec = ^RealtionRec;
-
-  TLoadDelegate<T: class> = class(TInterfacedObject, ILoadDelegate<T>)
-  private
-    FObject: T;
-    FOwnedObject: Boolean;
-    FLoaded: Boolean;
-    FOwner: PRelationRec;
-  public
-    constructor Create(AOwner: PRelationRec);
-    destructor Destroy; override;
-    function Get: T;
-    procedure Put(const Value: T);
-  end;
-
-  TReaderEOF = reference to function(Data: IDataReader): Boolean;
-
-  TORMBase = class
-  private
-    FCtx: TRttiContext;
-    FMapManager: IMapManager;
-    FDataManager: IDataManager;
-    FObjectState: IObjectState;
-    FCurrentReader: IDataReader;
-    FCurrentWriter: IDataWriter;
-    FStack: TList<TObject>;
-    function GetAddMethod(AType: TRttiType): TRttiMethod;
-  protected
-    function GetCollectionItemType(ClassName: String): TRttiType; overload;
-    function GetCollectionItemType(AtypeInfo: pointer): TRttiType; overload;
-    procedure FillObject(AObject: TValue; AMap: IMapDefinition;
-      ItemType: TRttiType; Data: IDataReader); virtual;
-    function InternalLoad(AtypeInfo: PTypeInfo; Data: IDataReader;
-      EOFChecker: TReaderEOF = nil): TValue; virtual;
-    property RttiContext: TRttiContext read FCtx;
-    property DataManager: IDataManager read FDataManager;
-    property MapManager: IMapManager read FMapManager;
-    property CurrentReader: IDataReader read FCurrentReader;
-    property CurrentWriter: IDataWriter read FCurrentWriter;
-  public
-    constructor Create;
-    destructor Destroy; override;
-    function Load<T>(Data: IDataReader): T; overload;
-    function Load<T>(KeyValues: TArray<TParameter>): T; overload;
-    function Load<T>(ProviderName: String; Parameters: TArray<TParameter>) : T; overload;
-    procedure Save(AObject: TObject; Dest: IDataWriter); overload;
-    procedure Save(AObject: TObject); overload;
-    procedure Delete(AObject: TObject; Dest: IDataWriter); overload;
-    procedure Delete(AObject: TObject); overload;
-  end;
-
-  TFactoryBase = class
-  protected
-    function GetInstance(AtypeInfo: pointer): TValue; virtual; abstract;
-  public
-    procedure Register(const AGUID: TGUID; AClass: TClass); virtual; abstract;
-    function Get(AtypeInfo: pointer): TValue; overload;
-    function Get<T>: T; overload;
-  end;
-
-Var
-  Factory: TFactoryBase;
 
 implementation
 
+uses DminiORM.Core.Factory;
+
 function TORMField.Modified: Boolean;
+var
+  LDetails: TArray<TORMObjectStatus>;
+  LObjStatus: TORMObjectStatus;
+
 begin
-  result := not VarSameValue(OldValue.AsVariant, NewValue.AsVariant);
+  if not IsDetailField then
+    result := not VarSameValue(OldValue.AsVariant, NewValue.AsVariant)
+  else
+  begin
+    LDetails := NewValue.AsType<TArray<TORMObjectStatus>>;
+    result := false;
+    for LObjStatus in LDetails do
+    begin
+      result := LObjStatus.IsModified;
+      if result then
+        break;
+    end;
+  end;
 end;
 
 function TORMObjectStatus.IsModified: Boolean;
@@ -285,116 +274,8 @@ begin
   SetLength(result, LIndex);
 end;
 
-{ TLazyLoadDelegated<T> }
 
-constructor TLoadDelegate<T>.Create(AOwner: PRelationRec);
-begin
-  FObject := nil;
-  FOwner := AOwner;
-end;
-
-destructor TLoadDelegate<T>.Destroy;
-begin
-  if Assigned(FObject) And (FOwnedObject) then
-    FObject.Free;
-  inherited;
-end;
-
-function TLoadDelegate<T>.Get: T;
-var
-  LDetailParamValues: TArray<TParameter>;
-  LProp: TRttiProperty;
-  LField: TRttiField;
-  i: Integer;
-begin
-
-  if not FLoaded then
-  begin
-    FLoaded := true;
-    for i := 0 to FOwner.Orm.FStack.Count - 1 do
-    begin
-      if TypeInfo(T) = FOwner.Orm.FStack[i].ClassInfo then
-      begin
-        FObject := T(FOwner.Orm.FStack[i]);
-        FOwnedObject := FALSE;
-        break;
-      end;
-    end;
-    if not Assigned(FObject) then
-    begin
-      FOwnedObject := true;
-      FLoaded := true;
-      SetLength(LDetailParamValues, Length(FOwner.DetailColumns));
-
-      for i := 0 to Length(FOwner.DetailColumns) - 1 do
-      begin
-        LDetailParamValues[i].Name := FOwner.DetailColumns[i].DetailField;
-        LProp := FOwner.Orm.RttiContext.GetType(FOwner.Owner.ClassInfo)
-          .GetProperty(FOwner.DetailColumns[i].MasterField);
-        if LProp <> nil then
-        begin
-          LDetailParamValues[i].Value := LProp.GetValue(FOwner.Owner);
-        end
-        else
-        begin
-          LField := FOwner.Orm.RttiContext.GetType(FOwner.Owner.ClassInfo)
-            .GetField(FOwner.DetailColumns[i].MasterField);
-          if LField = nil then
-            raise Exception.Create('Can''t find master field ' +
-              FOwner.DetailColumns[i].MasterField);
-          LDetailParamValues[i].Value := LField.GetValue(FOwner.Owner);
-        end
-      end;
-
-      if Assigned(FOwner.DataReader) then
-        // modo lmEmbebed
-        if (FOwner.DataReader = FOwner.Orm.FCurrentReader) then
-        begin
-          FObject := FOwner.Orm.InternalLoad(TypeInfo(T), FOwner.DataReader,
-            function(Data: IDataReader): Boolean
-            var
-              LParam: TParameter;
-              LColumnValue: TValue;
-            begin
-              result := FALSE;
-              for LParam in LDetailParamValues do
-              begin
-                if not Data.GetRowColumn(LParam.Name, LColumnValue) then
-                  Exit(true);
-                if not VarSameValue(LColumnValue.AsVariant,
-                  LParam.Value.AsVariant) then
-                  Exit(true);
-              end;
-            end).AsType<T>;
-        end
-        else
-          // modo lmColumn
-        begin
-          FObject := FOwner.Orm.InternalLoad(TypeInfo(T), FOwner.DataReader).AsType<T>;
-        end
-      else
-        // modo lmDelayed, lmInLoad
-        FObject := FOwner.Orm.InternalLoad(TypeInfo(T),
-          FOwner.Orm.FDataManager.GetReader(PTypeInfo(TypeInfo(T)).Name,
-          FOwner.Owner.ClassName + '.Detail', LDetailParamValues)).AsType<T>;
-
-    end;
-  end;
-  result := FObject;
-end;
-
-procedure TLoadDelegate<T>.Put(const Value: T);
-begin
-  if TObject(Value) <> TObject(FObject) then
-  begin
-    FObject.Free;
-    FObject := Value;
-    FOwnedObject := FALSE;
-    FLoaded := true;
-  end;
-end;
-
-{ LazyLoad<T> }
+{ Relation<T> }
 
 class operator Relation<T>.Implicit(const Lazy: Relation<T>): T;
 begin
@@ -402,21 +283,27 @@ begin
 end;
 
 function Relation<T>.Get: T;
+var LVal : TValue;
+
 begin
-  if LoadDelegate = nil then
+  if Rec.Delegate = nil then
     Initialize;
-  result := LoadDelegate.Get;
+  LVal := Rec.Delegate.Get;
+  if LVal.IsObject then
+    result := T(Lval.AsObject)
+
 end;
 
 class operator Relation<T>.Implicit(const Value: T): Relation<T>;
 begin
   result.Initialize;
-  result.LoadDelegate.Put(T);
+  result.Rec.Delegate.Put(T);
 end;
 
 procedure Relation<T>.Initialize;
 begin
-  LoadDelegate := TLoadDelegate<T>.Create(PRelationRec(@Self));
+  Rec.Delegate := Factory.Get<ILoadDelegate>;
+  Rec.Delegate.SetRelation(@self, TypeInfo(T));
 end;
 
 { TColumn }
@@ -427,446 +314,50 @@ begin
   AValue := AValue;
 end;
 
-{ TORMBase }
 
-constructor TORMBase.Create;
-begin
-  FCtx := TRttiContext.Create;
-  FMapManager := Factory.Get<IMapManager>;
-  FDataManager := Factory.Get<IDataManager>;
-  FObjectState := Factory.Get<IObjectState>;
-  FStack := TList<TObject>.Create;
-end;
+{ TORM }
 
-destructor TORMBase.Destroy;
-begin
-  FCtx.Free;
-  FStack.Free;
-  FMapManager := nil;
-  FDataManager := nil;
-  inherited;
-end;
-
-
-function TORMBase.GetAddMethod;
+class procedure TORM.Delete<T>(AValue: T);
 var
-  LAddMths: TArray<TRttiMethod>;
-  LMtd: TRttiMethod;
-  LMtdParams: TArray<TRttiParameter>;
+  LOrm: IORM;
+
 begin
-  LAddMths := AType.GetMethods;
-  if LAddMths = nil then
-    Exit(nil);
-  for LMtd in LAddMths do
-    if SameText('ADD', LMtd.Name) then
-    begin
-      LMtdParams := LMtd.GetParameters;
-      if (LMtdParams <> nil) And (Length(LMtdParams) = 1) then
-      begin
-        Exit(LMtd);
-      end;
-    end;
-  result := nil;
+  LOrm := Factory.Get<IOrm>;
+  LOrm.Save(TValue.From<T>(AValue));
 end;
 
-function TORMBase.GetCollectionItemType(AtypeInfo: pointer): TRttiType;
-begin
-  result := GetCollectionItemType(RttiContext.GetType(AtypeInfo).Name);
-end;
-
-function TORMBase.GetCollectionItemType(ClassName: String): TRttiType;
+class function TORM.Load<T>(AProviderName: String;
+  AParameters: TArray<TParameter>): T;
 var
-  LInx1, LInx2: Integer;
+  LOrm: IORM;
 begin
-  LInx1 := pos('<', ClassName) + 1;
-  LInx2 := pos('>', ClassName) - 1;
-  ClassName := Copy(ClassName, LInx1, LInx2 - LInx1 + 1);
-  result := RttiContext.FindType(ClassName);
-  if result = nil then
-    raise Exception.Create('Can''t find type ' + ClassName);
+  LOrm := Factory.Get<IOrm>;
+  result := LOrm.Load(TypeInfo(T),AProviderName,AParameters).AsType<T>;
 end;
 
-function TORMBase.Load<T>(ProviderName: String;
-Parameters: TArray<TParameter>): T;
+class function TORM.Load<T>(AKeyValues: array of const): T;
 var
-  DataReader: IDataReader;
+  LOrm: IORM;
 begin
-  DataReader := DataManager.GetReader(FCtx.GetType(TypeInfo(T)).Name,
-    ProviderName, Parameters);
-
-  if DataReader = nil then
-    raise Exception.Create('Can''t find default reader for class ' +
-      FCtx.GetType(TypeInfo(T)).Name);
-
-  result := Load<T>(DataReader);
+  LOrm := Factory.Get<IOrm>;
+  result := LOrm.Load(TypeInfo(T),AKeyValues).AsType<T>;
 end;
 
-function TORMBase.Load<T>(KeyValues: TArray<TParameter>): T;
-begin
-  result := Load<T>('', KeyValues);
-end;
-
-function TORMBase.Load<T>(Data: IDataReader): T;
-begin
-  result := InternalLoad(TypeInfo(T), Data).AsType<T>;
-end;
-
-procedure TORMBase.FillObject(AObject: TValue; AMap: IMapDefinition;
-ItemType: TRttiType; Data: IDataReader);
+class function TORM.Load<T>(AParameters: TArray<TParameter>): T;
 var
-  LColumnRelation: TColumnClassRelation;
-  LAccept: Boolean;
-  LColumnValue: TValue;
-  LRelationValue: TValue;
-  LOutParam: Array of TValue;
-  LDetailInfo: TRelationDescription;
-  LDetailRec: PRelationRec;
-  LInf : IInterface;
+  LOrm: IORM;
 begin
-  if Assigned(AMap.GetCustomMapMethod) then
-  begin
-    AMap.GetCustomMapMethod.Invoke(AObject, [TValue.From<IDataReader>(Data)]);
-  end
-  else
-  begin
-    if Assigned(AMap.GetOnMapInitializeMethod) then
-      AMap.GetOnMapInitializeMethod.Invoke(AObject,
-        [TValue.From<TDataRow>(Data.DataRow)]);
-
-    for LColumnRelation in AMap.GetColumnsMapInfo do
-    begin
-      Data.GetRowColumn(LColumnRelation.ColumnName, LColumnValue);
-      LAccept := FALSE;
-
-      if Assigned(AMap.GetOnMapFieldMethod) then
-      begin
-        SetLength(LOutParam, 4);
-        LOutParam[0] := LColumnRelation.ClassMember.Name;
-        LOutParam[1] := LColumnRelation.ColumnName;
-        LOutParam[2] := LColumnValue;
-        LOutParam[3] := LAccept;
-        ItemType.GetMethod(AMap.GetOnMapFieldMethod.Name)
-          .Invoke(AObject, LOutParam);
-        LAccept := LOutParam[3].AsBoolean;
-      end;
-
-      if NOT LAccept and not LColumnValue.IsEmpty then
-        try
-          if LColumnRelation.ClassMember is TRttiField then
-            TRttiField(LColumnRelation.ClassMember).SetValue(AObject.AsObject,
-              LColumnValue)
-          else
-            TRttiProperty(LColumnRelation.ClassMember)
-              .SetValue(AObject.AsObject, LColumnValue);
-        except
-          raise Exception.Create(VarToStr(LColumnValue.AsVariant) +
-            ' is not a valid value for ' + LColumnRelation.ClassMember.Name);
-        end;
-    end;
-
-    for LDetailInfo in AMap.GetDetailsInfo do
-    begin
-      LColumnValue := LDetailInfo.MasterProperty.GetValue(AObject.AsObject);
-      LDetailRec := PRelationRec(LColumnValue.GetReferenceToRawData);
-
-      LDetailRec.Owner := AObject.AsObject;
-      LDetailRec.Orm := Self;
-      LDetailRec.DetailColumns := LDetailInfo.MasterDetailRelationShip;
-      LDetailRec.DataReader := nil;
-
-      if LDetailInfo.LoadMode in [lmInLoad, lmEmbebed, lmColumn] then
-      begin
-        if LDetailInfo.LoadMode = lmEmbebed then
-          LDetailRec.DataReader := Data
-        else
-        if LDetailInfo.LoadMode = lmColumn then
-        begin
-          if not Data.GetRowColumn(LDetailInfo.DateReaderColumn,LRelationValue) then
-            raise Exception.Create('Can''t find delail column ' +
-              LDetailInfo.DateReaderColumn);
-          LInf := LRelationValue.AsInterface;
-          Supports(LInf, IDataReader,LDetailRec.DataReader);
-          //Linf._Release;
-        end;
-        RttiContext.GetType(LColumnValue.TypeInfo).GetMethod('Get')
-          .Invoke(LColumnValue, []);
-        if LDetailInfo.LoadMode = lmColumn then
-          LDetailRec.DataReader := nil;
-      end;
-
-      LDetailInfo.MasterProperty.SetValue(AObject.AsObject, LColumnValue);
-    end;
-
-    if Assigned(AMap.GetOnMapFinalizeMethod) then
-      AMap.GetOnMapInitializeMethod.Invoke(AObject, []);
-  end;
+  LOrm := Factory.Get<IOrm>;
+  result := LOrm.Load(TypeInfo(T),'',AParameters).AsType<T>;
 end;
 
-function TORMBase.InternalLoad(AtypeInfo: PTypeInfo; Data: IDataReader;
-EOFChecker: TReaderEOF): TValue;
+class procedure TORM.Save<T>(AValue: T);
 var
-  LObj: TValue;
-  LCollection: TObject;
-  LType: TRttiType;
-  LAddMthd: TRttiMethod;
-  LMap: IMapDefinition;
-  LRecNo: Integer;
-  LSavedReader: IDataReader;
+  LOrm: IORM;
 
 begin
-  LType := RttiContext.GetType(AtypeInfo);
-
-  LAddMthd := GetAddMethod(LType);
-  if (LAddMthd = nil) and Data.EOF then
-    Exit(TValue.Empty);
-
-  if Data.EOF then // es una colección que se crea y devuelve con 0 elementos
-    Exit(Factory.Get(AtypeInfo));
-
-  LSavedReader := FCurrentReader;
-  FCurrentReader := Data;
-  try
-    if LAddMthd <> nil then
-    begin
-      LType := GetCollectionItemType(LType.Name);
-      LCollection := Factory.Get(AtypeInfo).AsObject;
-    end
-    else
-      LCollection := nil;
-    try
-      LMap := FMapManager.Get(LType);
-      if Not Assigned(LMap) then
-        raise Exception.Create('Can'' create a map info for class ' +
-          LType.Name);
-
-      while not Data.EOF and (not Assigned(EOFChecker) or
-        (Assigned(EOFChecker) and not EOFChecker(Data))) do
-      begin
-        LObj := Factory.Get(LType.AsInstance.MetaclassType.ClassInfo);
-        // .AsObject;
-
-        LRecNo := Data.RecNo;
-        FStack.Add(LObj.AsObject);
-        try
-          FillObject(LObj, LMap, LType, Data);
-        finally
-          FStack.Delete(FStack.Count - 1);
-        end;
-
-        if LAddMthd = nil then
-          Exit(LObj);
-
-        if LRecNo = Data.RecNo then
-          Data.Next;
-
-        LAddMthd.Invoke(LCollection, [LObj]);
-      end;
-      result := LCollection;
-    except
-      if Assigned(LCollection) then
-        LCollection.Free;
-      if LObj.IsObject then
-        LObj.AsObject.Free;
-      raise;
-    end;
-  finally
-    FCurrentReader := LSavedReader;
-  end;
+  LOrm := Factory.Get<IOrm>;
+  LOrm.Save(TValue.From<T>(AValue));
 end;
-
-procedure TORMBase.Save(AObject: TObject; Dest: IDataWriter);
-var
-  LRecs: TArray<TORMObjectStatus>;
-  LRec: TORMObjectStatus;
-begin
-  FCurrentWriter := Dest;
-  try
-    LRec := FObjectState.GetFieldValues(AObject, FMapManager.Get(
-      RttiContext.GetType(AObject.ClassInfo)));
-
-    if not LRec.IsModified then
-      Exit;
-
-    SetLength(LRecs, 1);
-    LRecs[0] := LRec;
-    Dest.Save(LRecs);
-  finally
-    FCurrentWriter := nil;
-  end;
-  // Todo: grabar los datos detalle
-end;
-
-procedure TORMBase.Save(AObject: TObject);
-var
-  DataWriter: IDataWriter;
-begin
-  DataWriter := DataManager.GetWriter(AObject.QualifiedClassName);
-  if DataWriter = nil then
-    raise Exception.Create('Can''t find a writer for class ' +
-      AObject.QualifiedClassName);
-  Save(AObject, DataWriter);
-end;
-
-procedure TORMBase.Delete(AObject: TObject; Dest: IDataWriter);
-var
-  LRecs: TArray<TORMFields>;
-  LRec: TORMObjectStatus;
-
-begin
-  FCurrentWriter := Dest;
-  try
-    LRec := FObjectState.GetFieldValues(AObject, FMapManager.Get(
-      RttiContext.GetType(AObject.ClassInfo)));
-
-    SetLength(LRecs, 1);
-    LRecs[0] := LRec.KeyFields;
-    Dest.Delete(LRecs);
-  finally
-    FCurrentWriter := nil;
-  end;
-end;
-
-procedure TORMBase.Delete(AObject: TObject);
-var
-  LDataWriter: IDataWriter;
-begin
-  LDataWriter := DataManager.GetWriter(AObject.QualifiedClassName);
-  if LDataWriter = nil then
-    raise Exception.Create('Can''t find a writer for class ' +
-      AObject.QualifiedClassName);
-  Delete(AObject, LDataWriter);
-end;
-
-{ TFactory }
-
-function TFactoryBase.Get(AtypeInfo: pointer): TValue;
-begin
-  result := GetInstance(AtypeInfo);
-end;
-
-function TFactoryBase.Get<T>: T;
-var
-  LInstance: TValue;
-  LCtx: TRttiContext;
-  LIntf: IInterface;
-  LType: TRttiType;
-begin
-  LCtx := TRttiContext.Create;
-  try
-    LInstance := GetInstance(TypeInfo(T));
-    LType := LCtx.GetType(TypeInfo(T));
-    if LType is TRttiInterfaceType then
-    begin
-      LIntf := LInstance.AsInterface;
-      Supports(LInstance.AsObject, TRttiInterfaceType(LType).GUID, result);
-    end
-    else
-      result := LInstance.AsType<T>;
-  finally
-    LCtx.Free;
-  end;
-end;
-
-type
-
-  TRegisteredRec = record
-    AClass: TClass;
-    AGUID: TGUID;
-  end;
-
-  TFactory = class(TFactoryBase)
-  private
-    FRegisteredIntf: TArray<TRegisteredRec>;
-  protected
-    function GetInstance(AtypeInfo: pointer): TValue; override;
-  public
-    constructor Create;
-    procedure Register(const AGUID: TGUID; AClass: TClass); override;
-  end;
-
-constructor TFactory.Create;
-begin
-  SetLength(FRegisteredIntf, 0);
-end;
-
-function TFactory.GetInstance(AtypeInfo: pointer): TValue;
-var
-  LCtx: TRttiContext;
-  LRec: TRegisteredRec;
-  LClass: TClass;
-  LType: TRttiType;
-  LMethod: TRttiMethod;
-begin
-  LCtx := TRttiContext.Create;
-  try
-    LClass := nil;
-    result := nil;
-    LType := LCtx.GetType(AtypeInfo);
-
-    if (LType is TRttiInterfaceType) then
-    begin
-      for LRec in FRegisteredIntf do
-      begin
-        if LRec.AGUID = TRttiInterfaceType(LType).GUID then
-        begin
-          LClass := LRec.AClass;
-          break;
-        end;
-      end;
-
-      if LClass = nil then
-        raise Exception.Create('Can''t find a factory for interface ' +
-          LType.Name);
-
-      LType := LCtx.GetType(LClass.ClassInfo);
-    end
-    else
-      LClass := LType.AsInstance.MetaclassType;
-
-    for LMethod in LType.GetMethods do
-      if (LMethod.IsConstructor) and (Length(LMethod.GetParameters) = 0) then
-      begin
-        result := LMethod.Invoke(LClass, []).AsObject;
-        break;
-      end;
-  finally
-    LCtx.Free;
-  end;
-end;
-
-procedure TFactory.Register(const AGUID: TGUID; AClass: TClass);
-var
-  LRec: TRegisteredRec;
-  LCtx: TRttiContext;
-  i: Integer;
-begin
-  LCtx := TRttiContext.Create;
-  try
-    for i := 0 to Length(FRegisteredIntf) - 1 do
-      if FRegisteredIntf[i].AGUID = AGUID then
-      begin
-        FRegisteredIntf[i].AClass := AClass;
-        Exit;
-      end;
-
-    LRec.AGUID := AGUID;
-    LRec.AClass := AClass;
-
-    SetLength(FRegisteredIntf, Length(FRegisteredIntf) + 1);
-    FRegisteredIntf[Length(FRegisteredIntf) - 1] := LRec;
-  finally
-    LCtx.Free;
-  end;
-end;
-
-{ TORMField }
-
-initialization
-
-Factory := TFactory.Create;
-
-finalization
-
-Factory.Free;
 
 end.
