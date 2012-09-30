@@ -1,3 +1,18 @@
+{   Copyright 2012 - Juan Luis Rozano (jlrozano@gmail.com)
+
+    This file is part of DminiORM
+
+    DminiORM is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as
+    published by the Free Software Foundation, either version 3 of
+    the License, or (at your option) any later version.
+
+    DminiOrm is distributed WITHOUT ANY WARRANTY; without even the
+    implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+    See the GNU Lesser General Public License for more details.
+    <http://www.gnu.org/licenses/>.
+
+}
 unit DminiORM.VCLDataSetAdapter;
 
 interface
@@ -22,7 +37,7 @@ Type
     function GetRecNo: integer;
     function GetRowColumn(ColumnName: String; out Value: TValue): Boolean;
     function Save(Records: TArray<TORMObjectStatus>): TArray<TDataRow>;
-    procedure Delete(RecKeys: TArray<TORMFields>);
+    procedure Delete(RecKeys: TArray<TORMObjectStatus>);
     property EOF: Boolean read GetEOF;
     property RecNo: integer read GetRecNo;
     property DataRow: TDataRow read GetDataRow;
@@ -38,15 +53,19 @@ constructor TDataSetAdapter.Create(ADataSet: TDataSet; OwnedDataSet: Boolean);
 begin
   FDataSet := ADataSet;
   FOwned := OwnedDataSet;
-  FRecNo := 1;
+  if not FDataSet.Active then FDataSet.Open;
+  if FDataSet.EOF then
+    FRecNo := 0
+  else
+    FRecNo := 1
 end;
 
-procedure TDataSetAdapter.Delete(RecKeys: TArray<TORMFields>);
+procedure TDataSetAdapter.Delete(RecKeys: TArray<TORMObjectStatus>);
 var
-  LKey: TORMFields;
+  LKey: TORMObjectStatus;
 begin
   for LKey in RecKeys do
-    if LocateRec(LKey) then FDataSet.Delete;
+    if LocateRec(LKey.KeyFields) then FDataSet.Delete;
 end;
 
 procedure TDataSetAdapter.DeleteRec(ARec: TORMObjectStatus);
@@ -94,7 +113,6 @@ end;
 
 function TDataSetAdapter.GetEOF: Boolean;
 begin
-  if not FDataSet.Active then FDataSet.Open;
   Result := FDataSet.EOF;
 end;
 
@@ -112,19 +130,19 @@ begin
   Result := false;
   LFld := FDataSet.FindField(ColumnName);
   if (LFld <> nil) then
-  if LFld is TDataSetField then
-  begin
-    LCDS := TClientDataSet.Create(NIL);
-    LCDS.DataSetField := TDataSetField(LFld);
-    LCDS.Open;
-    Value := TValue.From<IDataReader>(TDataSetAdapter.Create(LCDS, TRUE));
-    Result := TRUE;
-  end
-  else
-  begin
-    Value := TValue.FromVariant(LFld.Value);
-    Result := TRUE;
-  end;
+    if LFld is TDataSetField then
+    begin
+      LCDS := TClientDataSet.Create(NIL);
+      LCDS.DataSetField := TDataSetField(LFld);
+      LCDS.Open;
+      Value := TValue.From<IDataReader>(TDataSetAdapter.Create(LCDS, TRUE));
+      Result := TRUE;
+    end
+    else
+    begin
+      Value := TValue.FromVariant(LFld.Value);
+      Result := TRUE;
+    end;
 end;
 
 function TDataSetAdapter.LocateRec(KeyInfo: TORMFields): boolean;
