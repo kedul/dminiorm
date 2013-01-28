@@ -18,7 +18,7 @@ unit DminiORM.Core.DefMapImpl;
 interface
 
 uses DminiORM.Core, Rtti, Generics.Collections, TypInfo, SysUtils,
-  DminiORM.Core.Factory;
+  DminiORM.Core.Factory, DminiORM.Core.RttiHelpers, DminiORM.Core.SimpleCollIntf;
 
 type
 
@@ -33,27 +33,28 @@ type
     property Provider: String read FProvider;
   end;
 
-  PrimaryKey = class(TCustomAttribute)
-  private
-    FProvider: String;
-  public
-    constructor Create; overload;
-    constructor Create(AProvider: String); overload;
-    property Provider: String read FProvider;
-  end;
+  PrimaryKey = class(TCustomAttribute);
 
   ForeignKey = class(TCustomAttribute)
   private
     FMasterClassTypeInfo: PTypeInfo;
-    FMasterField: String;
+    FMasterProperty: String;
   public
     constructor Create(AMasterClass: PTypeInfo); overload;
-    constructor Create(AMasterClass: Pointer; AMasterField: String); overload;
+    constructor Create(AMsterClass: TClass); overload;
+    constructor Create(AMsterIntf: TGUID); overload;
+    constructor Create(AMasterClass: Pointer; AMasterProperty: String); overload;
     property MasterClassTypeInfo: PTypeInfo read FMasterClassTypeInfo;
-    property MasterField: String read FMasterField;
+    property MasterProperty: String read FMasterProperty;
   end;
 
-  Table = class(Column);
+  Table = class(TCustomAttribute)
+  private
+    FName: String;
+  public
+    constructor Create(const AName: String);
+    property Name: String read FName;
+  end;
 
   Relation = class(TCustomAttribute)
   private
@@ -69,6 +70,7 @@ type
     property LoadMode: TRelationLoadMode read FLoadMode;
     property RelationType: TRelationType read FRelationType;
     property Provider: String read FProvider;
+    property Column: String read FColumn;
   end;
 
   CustomMap = class(TCustomAttribute);
@@ -79,7 +81,24 @@ type
 
   MapField = class(TCustomAttribute);
 
-  ObjectState = class (TCustomAttribute);
+  BeforeSave = class(TCustomAttribute);
+
+  AfterSave = class(TCustomAttribute);
+
+  BeforeDelete = class(TCustomAttribute);
+
+  AfterDelete = class(TCustomAttribute);
+
+  ObjectState = class(TCustomAttribute);
+
+  State = class (TCustomAttribute)
+  private
+    FStateMode: TStateMode;
+  public
+    constructor Create(AMode: TStateMode);
+    property Mode: TStateMode read FStateMode;
+  end;
+
 
 implementation
 
@@ -90,27 +109,41 @@ type
   TDefMapDefinitionImpl = class(TInterfacedObject, IMapDefinition)
   private
     FEntityName: String;
-    FRelationsInfo: TArray<TColumnClassRelation>;
+    FColumnsMapInfo: TArray<TClassMemberMap>;
+    FMasters: TArray<TMasterDescription>;
     FDetails: TArray<TRelationDescription>;
-    FKeyInfo: TArray<TColumnClassRelation>;
+    FKeyInfo: TArray<TClassMemberMap>;
     FCustomMapMethod: TRttiMethod;
     FOnMapInitialize: TRttiMethod;
     FOnMapFinalize: TRttiMethod;
     FOnMapField: TRttiMethod;
+    FBeforeSave: TRttiMethod;
+    FAfterSave: TRttiMethod;
+    FBeforeDelete: TRttiMethod;
+    FAfterDelete: TRttiMethod;
     FGetFields: TRttiMethod;
     FProvider: String;
+    FState: TStateMode;
+    class procedure ParseProvider(AType: TRttiType; Provider: String;
+      ADictionary: TDictionary<String, IMapDefinition>); static;
   public
     constructor Create;
     destructor Destroy; override;
     function GetEntityName: String;
-    function GetColumnsMapInfo: TArray<TColumnClassRelation>;
+    function GetColumnsMapInfo: TArray<TClassMemberMap>;
     function GetDetailsInfo: TArray<TRelationDescription>;
-    function GetKeyInfo: TArray<TColumnClassRelation>;
+    function GetMastersInfo: TArray<TMasterDescription>;
+    function GetKeyInfo: TArray<TClassMemberMap>;
     function GetCustomMapMethod: TRttiMethod;
     function GetOnMapInitializeMethod: TRttiMethod;
     function GetOnMapFinalizeMethod: TRttiMethod;
     function GetOnMapFieldMethod: TRttiMethod;
     function GetFieldValues: TRttiMethod;
+    function GetBeforeSave: TRttiMethod;
+    function GetAfterSave: TRttiMethod;
+    function GetBeforeDelete: TRttiMethod;
+    function GetAfterDelete: TRttiMethod;
+    function GetStateMode: TStateMode;
     property Provider: String read FProvider;
     class procedure Parse(AType: TRttiType; ADictionary: TDictionary<String, IMapDefinition>);
   end;
@@ -122,48 +155,81 @@ type
     constructor Create;
     destructor Destroy; override;
     function Get(AType: TRttiType): IMapDefinition; overload;
+    function Get(AType: PTypeInfo): IMapDefinition; overload;
     function Get(AType: TRttiType; AProvider: String): IMapDefinition; overload;
+    function Get(AType: PTypeInfo; AProvider: String): IMapDefinition; overload;
   end;
 
   { Column }
 
 constructor Column.Create(const AName: String);
 begin
-  FName := AName;
+  FName := UpperCase(AName);
   FProvider := '';
 end;
 
 constructor Column.Create(const AProvider: String; AName: String);
 begin
   FProvider := UpperCase(AProvider);
-  FName := AName;
+  FName := UpperCase(AName);
 end;
 
 { ForeignKey }
 
+
 constructor ForeignKey.Create(AMasterClass: PTypeInfo);
+
+  function GetPKProperty: String;
+  var
+    LPKAttributes: TArray<TAttrRecord<PrimaryKey>>;
+    LCtx: TRttiContext;
+  begin
+    LPKAttributes := LCtx.GetType(AMasterClass).GetMemberAttributesOfType<PrimaryKey>;
+    if Length(LPKAttributes) =  0 then
+      raise Exception.CreateFmt('Class %s has not defined a primary key property.',
+          [AMasterClass.Name]);
+
+    if Length(LPKAttributes) >  1 then
+      raise Exception.CreateFmt('Class %s has many primary key property defined.',
+          [AMasterClass.Name]);
+
+    result := LPKAttributes[0].Member.Name;
+  end;
+
 begin
   FMasterClassTypeInfo := AMasterClass;
+  FMasterProperty := GetPKProperty;
 end;
 
-constructor ForeignKey.Create(AMasterClass: Pointer; AMasterField: String);
+constructor ForeignKey.Create(AMasterClass: Pointer; AMasterProperty: String);
 begin
   FMasterClassTypeInfo := PTypeInfo(AMasterClass^);
-  FMasterField := AMasterField;
+  FMasterProperty := AMasterProperty;
+end;
+
+constructor ForeignKey.Create(AMsterClass: TClass);
+begin
+  Create(AMsterClass.ClassInfo);
+end;
+
+constructor ForeignKey.Create(AMsterIntf: TGUID);
+begin
+  Create (Factory.GetClassFor(AMsterIntf).ClassInfo);
 end;
 
 { TDefMapDefinitionImpl }
 
 constructor TDefMapDefinitionImpl.Create;
 begin
-  SetLength(FRelationsInfo, 0);
+  SetLength(FColumnsMapInfo, 0);
   SetLength(FDetails, 0);
   SetLength(FKeyInfo, 0);
+  FState := smKey;
 end;
 
 destructor TDefMapDefinitionImpl.Destroy;
 begin
-  SetLength(FRelationsInfo, 0);
+  SetLength(FColumnsMapInfo, 0);
   SetLength(FDetails, 0);
   SetLength(FKeyInfo, 0);
   inherited;
@@ -189,9 +255,14 @@ begin
   result := FGetFields;
 end;
 
-function TDefMapDefinitionImpl.GetKeyInfo: TArray<TColumnClassRelation>;
+function TDefMapDefinitionImpl.GetKeyInfo: TArray<TClassMemberMap>;
 begin
   result := FKeyInfo;
+end;
+
+function TDefMapDefinitionImpl.GetMastersInfo: TArray<TMasterDescription>;
+begin
+  result := FMasters;
 end;
 
 function TDefMapDefinitionImpl.GetOnMapFieldMethod: TRttiMethod;
@@ -209,87 +280,103 @@ begin
   result := FOnMapInitialize;
 end;
 
-function TDefMapDefinitionImpl.GetColumnsMapInfo: TArray<TColumnClassRelation>;
+function TDefMapDefinitionImpl.GetStateMode: TStateMode;
 begin
-  result := FRelationsInfo;
+  result := FState;
+end;
+
+function TDefMapDefinitionImpl.GetAfterDelete: TRttiMethod;
+begin
+  result := FAfterDelete;
+end;
+
+function TDefMapDefinitionImpl.GetAfterSave: TRttiMethod;
+begin
+  result := FAfterSave;
+end;
+
+function TDefMapDefinitionImpl.GetBeforeDelete: TRttiMethod;
+begin
+  result := FBeforeDelete;
+end;
+
+function TDefMapDefinitionImpl.GetBeforeSave: TRttiMethod;
+begin
+  result := FBeforeSave;
+end;
+
+function TDefMapDefinitionImpl.GetColumnsMapInfo: TArray<TClassMemberMap>;
+begin
+  result := FColumnsMapInfo;
 end;
 
 class procedure TDefMapDefinitionImpl.Parse(AType: TRttiType; ADictionary: TDictionary<String, IMapDefinition>);
 var
-  LRelations: TDictionary<String, TColumnClassRelation>;
-  LKeys: TList<String>;
-  LDetails: TDictionary<String,TRelationDescription>;
+  LProviders: TList<String>;
+  LContext: TRttiContext;
+  LProvider: String;
+begin
+  LProviders := TList<String>.Create;
+  LContext := TRttiContext.Create;
+  try
+    Atype.ForEachMemberAttributeOfType<TCustomAttribute>(
+      procedure (Attribute: TCustomAttribute; Member:TRttiMember)
+      var
+        LProvider: String;
+        LProp: TRttiProperty;
+      begin
+        LProp := LContext.GetType(Attribute.ClassInfo).GetProperty('Provider');
+        if LProp = nil then exit;
 
-  LRelationsMap: TObjectDictionary<String,TDictionary<String, TColumnClassRelation>>;
-  LKeysMap: TObjectDictionary<String, TList<String>>;
-  LDetailsMap: TObjectDictionary<String, TDictionary<String, TRelationDescription>>;
+        LProvider := LProp.GetValue(Attribute).AsString;
 
-  LProviders : TList<String>;
+        if (LProvider<>'') and not LProviders.Contains(LProvider) then
+          LProviders.Add(LProvider);
+      end);
+
+    TDefMapDefinitionImpl.ParseProvider(AType, '', ADictionary);
+
+    for LProvider in LProviders do
+      TDefMapDefinitionImpl.ParseProvider(AType, LProvider, ADictionary);
+  finally
+    LProviders.Free;
+    LContext.Free;
+  end;
+end;
+
+class procedure TDefMapDefinitionImpl.ParseProvider(AType: TRttiType; Provider: String;
+  ADictionary: TDictionary<String, IMapDefinition>);
+var
+  LColumnsMapInfo: TDictionary<String, TClassMemberMap>;
+  LKeys: TList<TClassMemberMap>;
+  LDetails: TList<TRelationDescription>;
+
+  LEntityColumns: TList<String>;
 
   LAttr: TCustomAttribute;
   LMember: TRttiMember;
-  LAddedKey, LAddedColumn: Boolean;
   LContext: TRttiContext;
-  LRelation: TColumnClassRelation;
 
   LDefMap: TDefMapDefinitionImpl;
+
+  LMasters: TDictionary<PTypeInfo, TMasterDescription>;
 
   i: integer;
 
   {$REGION 'Funciones auxiliares'}
-  function GetFKColumns(MasterTypeInfo, DetailTypeInfo: TRttiType;
-      ChildRelationShip: boolean = True): TArray<TRelationShipInfo>;
+
+  function GetProviderColumns(EntityName: String): TList <String>;
   var
-    LList: TList<TRelationShipInfo>;
-    LProp: TRttiProperty;
-    LAttr: TCustomAttribute;
-    LDetailColumn: String;
-    LMasterColumn: String;
-    LSw: Boolean;
-    LDetailDescription: TRelationShipInfo;
-
+    LDataManager: IDataManager;
+    LStr: String;
   begin
-    LList := TList<TRelationShipInfo>.Create;
-    try
-      for LProp in DetailTypeInfo.GetProperties do
-      begin
-        LDetailColumn := '';
-        LSw := FALSE;
-        for LAttr in LProp.GetAttributes do
-        begin
-          if (LAttr is Column) then
-            LDetailColumn := Column(LAttr).Name
-          else
-            if (LAttr is ForeignKey) and
-              (LContext.GetType(ForeignKey(LAttr).MasterClassTypeInfo)
-              .QualifiedName = MasterTypeInfo.QualifiedName)  then
-            begin
-              LSw := TRUE;
-              LMasterColumn := ForeignKey(LAttr).FMasterField;
-            end;
-
-          if LSw and (LDetailColumn <> '') then
-            break;
-        end;
-
-        if LSw then
-        begin
-          if LDetailColumn = '' then
-            LDetailColumn := LProp.Name;
-
-          LDetailDescription.DetailField :=  LDetailColumn;
-          LDetailDescription.MasterField := LMasterColumn;
-
-          LList.Add(LDetailDescription);
-        end;
-      end;
-      result := LList.ToArray;
-    finally
-      LList.Free;
-    end;
+    LDataManager := Factory.Get<IDataManager>;
+    result := TList<String>.Create;
+    for LStr in LDataManager.GetColumnNames(EntityName) do
+      result.Add(UpperCase(LStr));
   end;
 
-  function GetDeatilItemInfo(const DetailClassName: String): TRttiType;
+  function GetDetailItemType(const DetailClassName: String): TRttiType;
   var
     LInx: integer;
     LItemClassName: String;
@@ -311,229 +398,219 @@ var
     if LType = nil then
       raise Exception.Create('Can''t find type ' + LItemClassName);
 
-    result := LType;
+    if LType is  TRttiInterfaceType  then
+       result := LContext.GetType(factory.GetClassFor(TRttiInterfaceType(LType).GUID).ClassInfo)
+    else
+      result := LType;
 
   end;
 
-  procedure CheckMember;
-  var
-    LAttr: TCustomAttribute;
-    LProvKeys: TList<String>;
-    LProvRelations: TDictionary<String, TColumnClassRelation>;
-    LRelation: TColumnClassRelation;
-
+  function IsProviderColumn(ColumnName: String): Boolean;
   begin
-    LAddedKey := FALSE;
-    LAddedColumn := FALSE;
-
-    for LAttr in LMember.GetAttributes do
-    begin
-      if LAttr is Column then
-      begin
-        LRelation.ColumnName := Column(LAttr).Name;
-        LRelation.ClassMember := LMember;
-        if Column(LAttr).Name<>'' then
-        begin
-          if not LRelationsMap.TryGetValue(Column(LAttr).Provider, LProvRelations) then
-          begin
-            LProvRelations := TDictionary<String, TColumnClassRelation>.Create;
-            LRelationsMap.Add(Column(LAttr).Provider, LProvRelations);
-            if not LProviders.Contains(Column(LAttr).Provider) then
-              LProviders.Add(Column(LAttr).Provider);
-          end;
-          LProvRelations.Add(LMember.Name, LRelation);
-        end
-        else
-        begin
-          LRelations.Add(LMember.Name, LRelation);
-          LAddedColumn := TRUE;
-        end;
-      end
-      else
-      if LAttr is PrimaryKey then
-        if PrimaryKey(LAttr).Provider<>'' then
-        begin
-          if not LKeysMap.TryGetValue(PrimaryKey(LAttr).Provider, LProvKeys) then
-          begin
-            LProvKeys := TList<String>.Create;
-            LKeysMap.Add(PrimaryKey(LAttr).Provider, LProvKeys);
-            if not LProviders.Contains(PrimaryKey(LAttr).Provider) then
-              LProviders.Add(PrimaryKey(LAttr).Provider);
-          end;
-          LProvKeys.Add(LMember.Name)
-        end
-        else
-        begin
-          LKeys.Add(LMember.Name);
-          LAddedKey := TRUE;
-        end;
-    end;
+    result := LEntityColumns.Contains(ColumnName);
   end;
 
-  function CheckRelation: boolean;
+  function CheckRelation(Member: TRttiMember): boolean;
   var
-    LProvDetails: TDictionary<String, TRelationDescription>;
+    LEntityName: String;
+    LType: TRttiType;
     LDetailRec: TRelationDescription;
-    LRelation: TColumnClassRelation;
-    LProvider: String;
-    LAttr: TCustomAttribute;
+    LRelationDesc: TArray<Relation>;
 
   begin
     result := FALSE;
-    if TRttiProperty(LMember).PropertyType.IsRecord And
-        (Pos('Relation<', TRttiProperty(LMember).PropertyType.QualifiedName)
-        <> 0) then
+    if (Member is TRttiField) then
+      LType := TRttiField(Member).FieldType
+    else
+      LType := TRttiProperty(Member).PropertyType;
+
+    if LType.IsRecord And (Pos('Relation<', LType.QualifiedName) <> 0) then
+    begin
+
+      LEntityName :=  UpperCase(LDefMap.GetEntityName);
+      LDetailRec.MasterMember := Member;
+      LDetailRec.DetailClassType := GetDetailItemType(LType.QualifiedName);
+
+      LRelationDesc := Member.GetAttributesOfType<Relation>(
+        function (Attribute:Relation): boolean
+        begin
+          result := (Attribute.Provider = Provider) Or
+                    ((Provider = LEntityName) And (Attribute.Provider=''));
+        end);
+
+      if (Length(LRelationDesc) = 0) then
       begin
-        result := TRUE;
-        LDetailRec.MasterProperty := TRttiProperty(LMember);
         LDetailRec.LoadMode := lmDelayed;
         LDetailRec.RelationType := rtChild;
-        LProvider := '';
-        for LAttr in LMember.GetAttributes do
-          if LAttr is Relation then begin
-            LDetailRec.LoadMode := Relation(LAttr).FLoadMode;
-            LDetailRec.RelationType := Relation(LAttr).FRelationType;
-            LDetailRec.DateReaderColumn := Relation(LAttr).FColumn;
-            LProvider := Relation(LAttr).Provider;
-            break;
-          end;
-
-        if LDetailRec.RelationType = rtChild then
-          LDetailRec.MasterDetailRelationShip :=
-            GetFKColumns(AType, GetDeatilItemInfo(LDetailRec.MasterProperty.PropertyType.Name))
-        else
-          LDetailRec.MasterDetailRelationShip :=
-            GetFKColumns(GetDeatilItemInfo(LDetailRec.MasterProperty.PropertyType.Name), AType, FALSE);
-        if (LProvider<>'') then
-        begin
-          if not LDetailsMap.TryGetValue(LProvider, LProvDetails) then
-          begin
-            LProvDetails := TDictionary<String, TRelationDescription>.Create;
-            LDetailsMap.Add(LProvider, LProvDetails);
-            if not LProviders.Contains(LProvider) then
-              LProviders.Add(LProvider);
-          end;
-          LProvDetails.Add(LMember.Name,LDetailRec);
-        end
-        else
-          LDetails.Add(LMember.Name, LDetailRec);
+        LDetailRec.DataReaderColumn := '';
       end
-  end;
-
-  procedure CreateMaps;
-  var
-    i, j: Integer;
-    LMapObj: TDefMapDefinitionImpl;
-    LProvRelations: TDictionary<String, TColumnClassRelation>;
-    LProvKeys: TList<String>;
-    LProvDetails: TDictionary<String, TRelationDescription>;
-    LRelation: TColumnClassRelation;
-    LKey: String;
-    LDetail: TRelationDescription;
-
-  begin
-    ADictionary.Add(AType.Name, LDefMap);
-    for i := 1 to LProviders.Count-1 do
-    begin
-      LMapObj := TDefMapDefinitionImpl.Create;
-
-      LMapObj.FEntityName := LDefMap.FEntityName;
-      LMapObj.FCustomMapMethod := LDefMap.FCustomMapMethod;
-      LMapObj.FOnMapInitialize := LDefMap.FOnMapInitialize;
-      LMapObj.FOnMapFinalize := LDefMap.FOnMapFinalize;
-      LMapObj.FOnMapField := LDefMap.FOnMapField;
-      LMapObj.FGetFields := LDefMap.FGetFields;
-      LMapObj.FProvider := LDefMap.FProvider+'.'+LProviders[i];
-
-      if LRelationsMap.TryGetValue(LProviders[i], LProvRelations) then
-      begin
-        for LRelation in LDefMap.FRelationsInfo do
-          if not LProvRelations.ContainsKey(LRelation.ClassMember.Name) then
-            LProvRelations.Add(LRelation.ClassMember.Name, LRelation);
-        LMapObj.FRelationsInfo := LProvRelations.Values.ToArray;
-      end
-      else
-      begin
-        LMapObj.FRelationsInfo := LDefMap.FRelationsInfo;
-        LProvRelations := LRelations;
+      else begin
+        LDetailRec.LoadMode := LRelationDesc[0].LoadMode;
+        LDetailRec.RelationType := LRelationDesc[0].RelationType;
+        LDetailRec.DataReaderColumn := LRelationDesc[0].Column;
       end;
 
-      if not LKeysMap.TryGetValue(LProviders[i], LProvKeys) then
-        LProvKeys := LKeys;
-      SetLength(LMapObj.FKeyInfo, LProvKeys.Count);
-      for j := 0 to LProvKeys.Count - 1 do
-        LMapObj.FKeyInfo[j] := LProvRelations[LProvKeys[j]];
-
-      if LDetailsMap.TryGetValue(LProviders[i],LProvDetails) then
-      begin
-        for LDetail in LDefMap.FDetails do
-          if not LProvDetails.ContainsKey(LDetail.MasterProperty.Name) then
-            LProvDetails.Add(LDetail.MasterProperty.Name, LDetail);
-        LMapObj.FDetails := LProvDetails.Values.ToArray;
-      end
-      else
-        LMapObj.FDEtails:= LDefMap.FDetails;
-
-      ADictionary.Add(LProviders[i],LMapObj);
+      LDetails.Add(LDetailRec);
+      result := TRUE;
     end;
+  end;
+
+
+  procedure CheckMember(Member: TRttiMember);
+  var
+    LMemberMap: TClassMemberMap;
+    LEntityName: String;
+    LEntityColumnName: String;
+    LIsKeyAttr: Boolean;
+    LIsFKAttr: Boolean;
+
+  begin
+    LMemberMap.ClassMember := Member;
+    LMemberMap.Column := '';
+    LEntityName := UpperCase(LDefMap.GetEntityName);
+    LEntityColumnName := '';
+
+    LIsKeyAttr := FALSE;
+    LIsFKAttr := FALSE;
+
+    Member.ForEachAttributeOfType<TCustomAttribute>(procedure (Attribute: TCustomAttribute)
+      var
+        LProvider: String;
+      begin
+        if Attribute is Column then
+        begin
+          LProvider := Column(Attribute).Provider;
+          if (LProvider = LEntityName) Or
+             (LProvider = '') then
+              LEntityColumnName := Column(Attribute).Name;
+          if (LProvider = Provider) then
+           LMemberMap.Column := Column(Attribute).Name;
+        end
+        else
+        if Attribute is PrimaryKey then
+          LIsKeyAttr := TRUE
+        else
+        if Attribute is ForeignKey then
+          LIsFKAttr := TRUE;
+      end);
+
+    if (LEntityColumnName = '') and ( Member.Visibility in [mvPublic, mvPublished]) and
+       IsProviderColumn(UpperCase(Member.Name)) then
+      LEntityColumnName := UpperCase(Member.Name);
+
+    if LEntityColumnName = '' then
+      Exit;
+
+    if LMemberMap.Column = '' then
+      LMemberMap.Column := LEntityColumnName;
+
+    LColumnsMapInfo.Add(Member.Name, LMemberMap);
+
+    if LIsKeyAttr then
+      LKeys.Add(LMemberMap);
+
+    if LIsFKAttr then
+      Member.ForEachAttributeOfType<ForeignKey>(procedure (LAttr: ForeignKey)
+        var
+          LMasterDesc: TMasterDescription;
+          LIndex: Integer;
+          LMasterColumnAttr: Column;
+          LMasterEntityName: String;
+          LTableAttr: Table;
+        begin
+          if not LMasters.TryGetValue(ForeignKey(LAttr).FMasterClassTypeInfo,
+            LMasterDesc) then
+          begin
+            LMasterDesc.MasterClassType := LContext.GetType(
+               ForeignKey(LAttr).FMasterClassTypeInfo);
+            SetLength(LMasterDesc.MasterDetailRelationShip,1);
+            LIndex := 0;
+            LMasters.Add(ForeignKey(LAttr).FMasterClassTypeInfo, LMasterDesc);
+          end
+          else
+          begin
+            LIndex := Length(LMasterDesc.MasterDetailRelationShip);
+            SetLength(LMasterDesc.MasterDetailRelationShip,LIndex + 1);
+          end;
+
+          LMasterDesc.MasterDetailRelationShip[LIndex].MasterField :=
+             GetFieldOrProperty(ForeignKey(LAttr).FMasterClassTypeInfo,
+                                  ForeignKey(LAttr).MasterProperty);
+          LTableAttr := LMasterDesc.MasterClassType.GetAttributeOfType<Table>;
+
+          if Assigned(LTableAttr) then
+            LMasterEntityName := LTableAttr.Name
+          else
+            LMasterEntityName := UpperCase(Copy(ForeignKey(LAttr)
+              .FMasterClassTypeInfo.Name,2,
+              Length(ForeignKey(LAttr).FMasterClassTypeInfo.Name)-1));
+
+          LMasterColumnAttr := LMasterDesc.MasterDetailRelationShip[LIndex]
+              .MasterField.GetAttributeOfType<Column>(function (Attr: Column): boolean
+                begin
+                  result := (Attr.Provider = '') Or
+                            (Attr.Provider = LMasterEntityName)
+                end);
+
+          if Assigned(LMasterColumnAttr) then
+            LMasterDesc.MasterDetailRelationShip[LIndex].MasterColumn :=
+              LMasterColumnAttr.Name
+          else
+            LMasterDesc.MasterDetailRelationShip[LIndex].MasterColumn :=
+             UpperCase(LMasterDesc.MasterDetailRelationShip[LIndex]
+                        .MasterField.Name);
+
+
+          LMasterDesc.MasterDetailRelationShip[LIndex].DetailField :=
+            Member;
+          LMasterDesc.MasterDetailRelationShip[LIndex].DetailColumn :=
+            LEntityColumnName;
+
+          LMasters[ForeignKey(LAttr).FMasterClassTypeInfo] := LMasterDesc;
+        end
+      );
+
   end;
 
   {$ENDREGION}
 
 begin
-  LRelations := TDictionary<String, TColumnClassRelation>.Create;
-  LKeys := TList<String>.Create;
-  LDetails := TDictionary<String, TRelationDescription>.Create;
-
-  LRelationsMap := TObjectDictionary<String, TDictionary<String, TColumnClassRelation>>
-          .Create([doOwnsValues]);
-  LKeysMap := TObjectDictionary<String, TList<String>>.Create([doOwnsValues]);
-  LDetailsMap := TObjectDictionary<String, TDictionary<String, TRelationDescription>>.Create([doOwnsValues]);
-
-  LDefMap := TDefMapDefinitionImpl.Create;
-
-  LProviders:= TList<String>.Create;
-
-//  LRelationsMap.Add(AType.Name, LRelations);
-//  LKeysMap.Add(AType.Name, LKeys);
-//  LDetails.Add(AType.Name, LDetails);
+  LColumnsMapInfo := TDictionary<String, TClassMemberMap>.Create;
+  LKeys := TList<TClassMemberMap>.Create;
+  LDetails := TList<TRelationDescription>.Create;
+  LMasters := TDictionary<PTypeInfo, TMasterDescription>.Create;
 
   LContext := TRttiContext.Create;
+
+  LDefMap := TDefMapDefinitionImpl.Create;
 
   try
 
     for LAttr in AType.GetAttributes do
       if LAttr is Table then
-      begin
-        LDefMap.FEntityName := Table(LAttr).Name;
-        break;
-      end;
+        LDefMap.FEntityName := Table(LAttr).Name
+      else
+        if LAttr is State then
+          LDefMap.FState := State(LAttr).Mode;
+
     if LDefMap.FEntityName = '' then
-      LDefMap.FEntityName := AType.Name;
+      LDefMap.FEntityName := UpperCase(Copy(AType.Name,2, Length(AType.Name)-1));
+
+    LEntityColumns := GetProviderColumns(LDefMap.FEntityName);
 
     for LMember in AType.GetFields do
-    begin
-      CheckMember;
-      if (LAddedKey) And not(LAddedColumn) then
+      if LMember.Visibility = mvPublic then
       begin
-        LRelation.ColumnName := LMember.Name;
-        LRelation.ClassMember := LMember;
-        LRelations.Add(LMember.Name, LRelation);
-      end;
-    end;
+        if not CheckRelation(LMember) then
+          CheckMember(LMember);
+      end
+      else
+        CheckMember(LMember);
 
-    for LMember in AType.GetDeclaredProperties do
-    if not CheckRelation then
-    begin
-      LAddedColumn := FALSE;
-      CheckMember;
-      if not LAddedColumn then
-      begin
-        LRelation.ColumnName := LMember.Name;
-        LRelation.ClassMember := LMember;
-        LRelations.Add(LMember.Name, LRelation);
-      end;
-    end;
+    for LMember in AType.GetProperties do
+      if TRttiProperty(LMember).IsWritable then
+        if not CheckRelation(LMember) then
+          CheckMember(LMember);
 
     {$REGION 'Verificar métodos de inicialización propia'}
     for LMember in AType.GetMethods do
@@ -544,49 +621,60 @@ begin
         if LAttr is CustomMap then
         begin
           LDefMap.FCustomMapMethod := TRttiMethod(LMember);
-          break;
         end
         else if LAttr is MapInitialize then
         begin
           LDefMap.FOnMapInitialize := TRttiMethod(LMember);
-          break;
         end
         else if LAttr is MapFinalize then
         begin
           LDefMap.FOnMapFinalize := TRttiMethod(LMember);
-          break;
         end
         else if LAttr is MapField then
         begin
           LDefMap.FOnMapField := TRttiMethod(LMember);
-          break;
         end
         else if LAttr is ObjectState then
         begin
           LDefMap.FGetFields := TRttiMethod(LMember);
-          break;
+        end
+        else if LAttr is BeforeSave then
+        begin
+          LDefMap.FBeforeSave := TRttiMethod(LMember);
+        end
+        else if LAttr is AfterSave then
+        begin
+          LDefMap.FAfterSave := TRttiMethod(LMember);
+        end
+        else if LAttr is BeforeDelete then
+        begin
+          LDefMap.FBeforeDelete := TRttiMethod(LMember);
+        end
+        else if LAttr is AfterDelete then
+        begin
+          LDefMap.FAfterDelete := TRttiMethod(LMember);
         end;
       end;
     end;
 {$ENDREGION}
 
-    LDefMap.FRelationsInfo := LRelations.Values.ToArray;
+    LDefMap.FColumnsMapInfo := LColumnsMapInfo.Values.ToArray;
+    LDefMap.FKeyInfo := LKeys.ToArray;
+    LDefMap.FMasters := LMasters.Values.ToArray;
+    LDefMap.FDetails := LDetails.ToArray;
     LDefMap.FProvider := AType.Name;
 
-    SetLength(LDefMap.FKeyInfo, LKeys.Count);
-    for i := 0 to LKeys.Count - 1 do
-      LDefMap.FKeyInfo[i] := LRelations[LKeys[i]];
-    LDefMap.FDetails := LDetails.Values.ToArray;
-
-    CreateMaps;
+    if Provider<>'' then
+      ADictionary.Add(UpperCase(AType.Name+'.'+Provider), LDefMap)
+    else
+      ADictionary.Add(UpperCase(AType.Name), LDefMap)
   finally
-    LRelations.Free;
+    LMasters.Free;
+    LColumnsMapInfo.Free;
     LKeys.Free;
     LDetails.Free;
-    LRelationsMap.Free;
-    LKeysMap.Free;
-    LDetailsMap.Free;
-    LProviders.Free;
+    if LEntityColumns<>nil then
+      LEntityColumns.Free;
     LContext.Free;
   end;
 end;
@@ -605,17 +693,40 @@ begin
 end;
 
 
+function TDefMapImpl.Get(AType: PTypeInfo): IMapDefinition;
+begin
+  result := Get(AType,'');
+end;
+
+function TDefMapImpl.Get(AType: PTypeInfo; AProvider: String): IMapDefinition;
+var
+  LCtx: TRttiContext;
+begin
+  LCtx:= TRttiContext.Create;
+  try
+    result := Get(LCtx.GetType(Atype), AProvider);
+  finally
+    LCtx.Free;
+  end;
+end;
+
 function TDefMapImpl.Get(AType: TRttiType; AProvider: String): IMapDefinition;
 var
   LMapDef: IMapDefinition;
   LOk: boolean;
+  LCtx: TRttiContext;
 begin
+  if AType is TRttiInterfaceType then
+  begin
+    AType := LCtx.GetType(Factory.GetClassFor(TRttiInterfaceType(AType).GUID).ClassInfo);
+  end;
+
   if AProvider = '' then
-    LOk := FMaps.TryGetValue(AType.Name, result)
+    LOk := FMaps.TryGetValue(UpperCase(AType.Name), result)
   else begin
-    LOk := FMaps.TryGetValue(AType.Name+'.'+AProvider, result);
+    LOk := FMaps.TryGetValue(UpperCase(AType.Name+'.'+AProvider), result);
     if not LOK then
-      LOk := FMaps.TryGetValue(AType.Name, result);
+      LOk := FMaps.TryGetValue(UpperCase(AType.Name), result);
   end;
   if not LOk then
   begin
@@ -667,20 +778,24 @@ begin
   FColumn := AReaderColumnName;
 end;
 
-{ PrimaryKey }
 
-constructor PrimaryKey.Create;
+
+{ State }
+
+constructor State.Create(AMode: TStateMode);
 begin
-  FProvider:='';
+  FStateMode := AMode;
 end;
 
-constructor PrimaryKey.Create(AProvider: String);
+{ Table }
+
+constructor Table.Create(const AName: String);
 begin
-  FProvider:= AProvider;
+  FName := UpperCase(AName);
 end;
 
 initialization
 
-Factory.Register(IMapManager, TDefMapImpl);
+Factory.Register(IMapManager, TDefMapImpl.Create);
 
 end.

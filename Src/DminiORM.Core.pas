@@ -17,7 +17,8 @@ unit DminiORM.Core;
 
 interface
 
-Uses RTTI, SysUtils, TypInfo, Variants, Generics.Collections;
+Uses RTTI, SysUtils, TypInfo, Variants, DminiORM.Core.ListIntf,
+      DminiORM.Core.SimpleCollIntf;
 
 type
 
@@ -26,6 +27,8 @@ type
     Value: TValue;
     constructor Create(AName: String; AValue: TValue);
   end;
+
+  TParameter = TColumn;
 
   TDataRow = TArray<TColumn>;
 
@@ -42,24 +45,34 @@ type
   end;
 
   TORMField = record
-    ProperyName: String;
+    ObjMember: TRttiMember;
     ColumnName: String;
     IsKeyField: Boolean;
-    IsDetailField: Boolean;
+    HasOldValueInfo: Boolean;
     OldValue: TValue;
     NewValue: TValue;
     function Modified: Boolean;
+    function Old: TColumn;
+    function New: TColumn;
   end;
 
   TORMFields = TArray<TORMField>;
 
-  TObjectState = (osNew, osModified, osDeleted, osUnknow);
+  TObjectState = (osNew, osBrowse, osModified, osDeleted, osUnknow);
+
+  TStateRec = record
+    State: TObjectState;
+    Owner: TObject;
+    Data: ISimpleDictionary<String, TValue>;
+  end;
+
+  PStateRec = ^TStateRec;
 
   TORMObjectStatus = record
     State: TObjectState;
-    EnitityName: String;
     Fields: TORMFields;
     function ModifiedFields: TORMFields;
+    function ModifiedColumns: TDataRow;
     function IsModified: Boolean;
     function KeyFields: TORMFields;
   end;
@@ -67,16 +80,20 @@ type
   IDataWriter = interface
     ['{D10FA8DD-0838-4836-88E0-A9351739CA6C}']
     function Save(Records: TArray<TORMObjectStatus>): TArray<TDataRow>;
-    procedure Delete(RecKeys: TArray<TORMObjectStatus>);
+    procedure Delete(KeyFields: TArray<TDataRow>);
   end;
-
-  TParameter = TColumn;
 
   IDataManager = interface
     ['{3C8B01FA-FD35-4B79-8466-1E3B8D660C91}']
-    function GetReader(ClassName, ProviderName: String;
+    function GetReader(ProviderName: String;
       Parameters: TArray<TParameter>): IDataReader;
-    function GetWriter(ClassName: String): IDataWriter;
+    function GetWriter(EntityName: String): IDataWriter;
+    function GetColumnNames(EntityName: String): TArray<String>;
+    function Execute(FuncName: String; Parameters: Array of TParameter): TValue;
+    procedure BeginTran;
+    procedure Commit;
+    procedure RollBack;
+    function InTransaction: Boolean;
   end;
 
   TCustomMapPrototype = procedure(Data: IDataReader) of Object;
@@ -88,51 +105,81 @@ type
   TOnMapFieldPrototype = procedure(MemberName, ColumnName: String;
     var Value: TValue; var Accept: Boolean) of Object;
 
-  TColumnClassRelation = record
+  TClassMemberMap = record
     ClassMember: TRttiMember;
-    ColumnName: String;
+    Column: String;
+//    Columns: ISimpleDictionary<String, String>;
+    function Value(AObj: TObject): TValue; overload;
+//    function Value(DataReader: IDataReader): TValue; overload;
+//    function Value(const Provider: String; DataReader: IDataReader): TValue; overload;
   end;
 
   TRelationLoadMode = (lmDelayed, lmInLoad, lmColumn, lmEmbebed);
 
   TRelationType = (rtOwner, rtChild);
 
-  TRelationShipInfo = record
-    MasterField: String;
-    DetailField: String;
+  TMasterDetailMembers = record
+    MasterField: TRttiMember;
+    MasterColumn: String;
+    DetailField: TRttiMember;
+    DetailColumn: String;
   end;
 
+  TMasterDescription = record
+    MasterClassType: TRttiType;
+    MasterDetailRelationShip: TArray<TMasterDetailMembers>;
+  end;
+
+//  TRelationTypeInfo = record
+//    LoadMode: TRelationLoadMode;
+//    RelationType: TRelationType;
+//    DataReaderColumn: String;
+//  end;
+
   TRelationDescription = record
-    MasterProperty: TRttiProperty;
+    MasterMember: TRttiMember;
+    //RelationTypeInfo: ISimpleDictionary<String, TRelationTypeInfo>;
     LoadMode: TRelationLoadMode;
     RelationType: TRelationType;
-    DateReaderColumn: String;
-    MasterDetailRelationShip: TArray<TRelationShipInfo>;
+    DataReaderColumn: String;
+    DetailClassType: TRttiType;
+    //MasterDetailRelationShip: TRelationShipInfo;
+    //DetailMember: TRttiMember;
   End;
+
+  TStateMode = (smNone, smKey, smAll);
 
   IMapDefinition = Interface
     ['{252A0310-9E5E-4C10-AA92-969421158AE4}']
     function GetEntityName: String;
-    function GetColumnsMapInfo: TArray<TColumnClassRelation>;
+    function GetColumnsMapInfo: TArray<TClassMemberMap>;
     function GetDetailsInfo: TArray<TRelationDescription>;
-    function GetKeyInfo: TArray<TColumnClassRelation>;
+    function GetMastersInfo: TArray<TMasterDescription>;
+    function GetKeyInfo: TArray<TClassMemberMap>;
     function GetCustomMapMethod: TRttiMethod;
     function GetOnMapInitializeMethod: TRttiMethod;
     function GetOnMapFinalizeMethod: TRttiMethod;
     function GetOnMapFieldMethod: TRttiMethod;
     function GetFieldValues: TRttiMethod;
+    function GetBeforeSave: TRttiMethod;
+    function GetAfterSave: TRttiMethod;
+    function GetBeforeDelete: TRttiMethod;
+    function GetAfterDelete: TRttiMethod;
+    function GetStateMode: TStateMode;
   End;
 
   IMapManager = Interface
     ['{5946082A-37E5-4E65-9BA3-0F31E2C88352}']
     function Get(AType: TRttiType): IMapDefinition; overload;
+    function Get(AType: PTypeInfo): IMapDefinition; overload;
     function Get(AType: TRttiType; AProvider: String): IMapDefinition; overload;
+    function Get(AType: PTypeInfo; AProvider: String): IMapDefinition; overload;
   End;
 
   IObjectState = Interface
     ['{B57791BF-381F-4177-9FCF-580FB1F8E764}']
-    function GetFieldValues(AObject: TObject; AMap: IMapDefinition)
-      : TORMObjectStatus;
+    function GetFieldValues(AObject: TObject): TORMObjectStatus;
+    function GetOwner(AObject: TObject): TObject;
   end;
 
 
@@ -149,83 +196,140 @@ type
   // procedure Delete(AKey: TValue);
   // end;
 
-    ILoadDelegate = Interface
+  ILoadDelegate = Interface
     ['{D9DB705C-DB5D-433A-901D-88E9EF631CEF}']
+    function GetOwner: TObject;
     procedure Put(const Value: TValue);
     function Get: TValue;
-    procedure SetRelation(RelationAddr: pointer;
-      RelationResultTypeInfo: PTypeInfo);
-    function AsObject: TInterfacedObject;
+    procedure SetReturnType(AReturnTypeInfo: PTypeInfo);
   End;
 
-  RelationRec = record
-    Delegate: ILoadDelegate;
-    Owner: TObject;
-    DetailColumns: TArray<TRelationShipInfo>;
-    DataReader: IDataReader;
-  end;
-
-  PRelationRec = ^RelationRec;
-
-  Relation<T: class> = record
+  Relation<T> = record
   private
-    {
-      LoadDelegate es necesario para que la lista con los objetos se libere de
-      forma automática cuando se pierda la referencia. De otra forma, sería
-      necesario que en el destructor de la clase, se liberara de forma explicita
-      este objeto.
-    }
-    Rec: RelationRec;
-    procedure Initialize;
+    //Rec: RelationRec;
+    Delegate: ILoadDelegate;
   public
+    procedure Initialize;
+    function GetTypeInfo: PTypeInfo;
     function Get: T;
-    class operator Implicit(const Lazy: Relation<T>): T;
-    class operator Implicit(const Value: T): Relation<T>;
+    procedure Put(const Value: T);
+    function New<V>: V; overload;
+    function New: T; overload;
+    class operator Implicit(const Value: Relation<T>): T;
+    //class operator Implicit(const Value: T): Relation<T>;
   end;
+
+  TORMOnLoadValue = reference to procedure(const AValue: TValue);
 
   IORM = Interface
     ['{6CC8D453-528B-407D-BE65-D1D8FD4A71ED}']
     function Load(ATypeInfo: PTypeInfo; AProvider: String;
-      Parameters: TArray<TParameter>): TValue; overload;
-    function Load(ATypeInfo: PTypeInfo; AKeyValues: Array of const): TValue; overload;
+      Parameters: TArray<TParameter>; OnLoad: TORMOnLoadValue): TValue; overload;
+    function Load(ATypeInfo: PTypeInfo; AKeyValues: Array of TValue;
+      OnLoad: TORMOnLoadValue): TValue; overload;
     procedure Save(AValue: TValue);
+    procedure CancelChanges(AValue: TValue);
     procedure Delete(AValue: TValue);
-    function AsObject: TInterfacedObject;
+    function New(ATypeInfo: PTypeInfo): TValue; overload;
+    function New(ATypeInfo: PTypeInfo; AOwner: TValue): TValue; overload;
   End;
 
+  TORMProcessValue<T> = reference to procedure (const Value: T);
+
   TORM = class
-    class function Load<T>(AProviderName: String; AParameters: TArray<TParameter>): T; overload;
-    class function Load<T>(AParameters: TArray<TParameter>): T; overload;
-    class function Load<T>(AKeyValues: Array of const): T; overload;
-    class procedure Save<T>(AValue: T);
-    class procedure Delete<T>(AValue: T);
+    class function Load<T>(AProviderName: String; AParameters: Array of TParameter;
+        ALoadProc: TORMOnLoadValue = nil): T; overload;
+    class function Load<T>(AParameters: Array of TParameter;
+        ALoadProc: TORMOnLoadValue = nil): T; overload;
+    class function Load<T>(AKeyValues: Array of TValue;
+        ALoadProc: TORMOnLoadValue = nil): T; overload;
+    class procedure Save(Value: TObject); overload;
+    class procedure Save(Value: IInterface); overload;
+    class procedure Delete(Value: TObject); overload;
+    class procedure Delete(Value: IInterface); overload;
+    class function GetOwner<T>(Value: TObject): T;
+    class function New<T>: T; overload;
+    class function New<T>(AOwner: TObject): T; overload;
+//    class function New<T>(AOwner: IInterface): T; overload;
+    class function ObjectState(AObject: TObject; out ObjStatus: TORMObjectStatus): boolean;
+    class procedure ForEach<T>(AProcessProc: TORMProcessValue<T>;
+        AParameters: Array of TParameter; FreeObjects: Boolean = TRUE; AProviderName: String ='' );
+    class function Exec(FuncName: String; Parameters: Array of TParameter): TValue;
+    class procedure CancelChanges(Value: TObject); overload;
+    class procedure CancelChanges(Value: IInterface); overload;
   end;
+
+  TForEachList<T> = class
+  public
+    procedure Add(const AValue: T); virtual;
+    function GetEnumerator: TObject;
+  end;
+
+  TForEachListFreeObject<T> = class (TForEachList<T>)
+  public
+    procedure Add(const AValue: T); override;
+  end;
+
 
 
 implementation
 
 uses DminiORM.Core.Factory;
 
+
 function TORMField.Modified: Boolean;
-var
-  LDetails: TArray<TORMObjectStatus>;
-  LObjStatus: TORMObjectStatus;
 
 begin
-  if not IsDetailField then
-    result := not VarSameValue(OldValue.AsVariant, NewValue.AsVariant)
+  if not HasOldValueInfo then
+    result := TRUE
   else
+    result := not SameText(VarToStr(OldValue.AsVariant), VarToStr(NewValue.AsVariant))
+end;
+
+function TORMField.New: TColumn;
+begin
+  result.Name := ColumnName;
+  result.Value := NewValue;
+end;
+
+function TORMField.Old: TColumn;
+begin
+  if not HasOldValueInfo then
   begin
-    LDetails := NewValue.AsType<TArray<TORMObjectStatus>>;
-    result := false;
-    for LObjStatus in LDetails do
-    begin
-      result := LObjStatus.IsModified;
-      if result then
-        break;
-    end;
+    result.Name := '';
+    result.Value := NIL;
+  end
+  else begin
+    result.Name := ColumnName;
+    result.Value := NewValue;
   end;
 end;
+
+function TClassMemberMap.Value(AObj: TObject): TValue;
+begin
+  if ClassMember is TRttiField then
+    result := TRttiField(ClassMember).GetValue(AObj)
+  else
+    result := TRttiProperty(ClassMember).GetValue(AObj)
+end;
+
+
+//function TClassMemberMap.Value(DataReader: IDataReader): TValue;
+//begin
+//  result := Value('',DataReader);
+//end;
+
+//function TClassMemberMap.Value(const Provider: String;
+//  DataReader: IDataReader): TValue;
+//var
+//  LColumnName: String;
+//begin
+//  LColumnName := Columns.Get(UpperCase(Provider));
+//  if not DataReader.GetRowColumn(LColumnName, Result) then
+//    raise Exception.CreateFmt('Can''t find column %s in provider %s',
+//        [LColumnName, Provider]);
+//end;
+
 
 function TORMObjectStatus.IsModified: Boolean;
 var
@@ -235,7 +339,25 @@ begin
   if not result then
     for LField in Fields do
       if LField.Modified then
-        Exit(true);
+         Exit(true);
+end;
+
+function TORMObjectStatus.ModifiedColumns: TDataRow;
+var
+  i: Integer;
+  LIndex: Integer;
+begin
+  SetLength(result, Length(Fields));
+  LIndex := 0;
+
+  for i := 0 to Length(Fields) - 1 do
+    if Fields[i].Modified then
+    begin
+      result[LIndex].Create(Fields[i].ColumnName, Fields[i].NewValue);
+      inc(LIndex);
+    end;
+
+  SetLength(result, LIndex);
 end;
 
 function TORMObjectStatus.ModifiedFields: TORMFields;
@@ -277,33 +399,104 @@ end;
 
 { Relation<T> }
 
-class operator Relation<T>.Implicit(const Lazy: Relation<T>): T;
+class operator Relation<T>.Implicit(const Value: Relation<T>): T;
 begin
-  result := Lazy.Get;
+  result := Value.Get;
+end;
+
+function Relation<T>.New: T;
+var
+  LList: TListInterface;
+  LCtx:TRttiContext;
+begin
+  LList := TListInterface.Get(LCtx.GetType(TypeInfo(T)));
+  if Assigned(LLIst) then
+  begin
+    LList.List.Free;
+    LList.Free;
+    result := Get;
+  end
+  else
+  begin
+    if not Assigned(Delegate) then
+       Initialize;
+    result := TORM.New<T>(Delegate.GetOwner);
+    Delegate.Put(TValue.From<T>(result));
+  end;
+end;
+
+function Relation<T>.New<V>: V;
+var
+  LValue: TValue;
+begin
+  if TypeInfo(V)=TypeInfo(T) then
+  begin
+     LValue := TValue.From<T>(New);
+     Exit (LValue.AsType<V>);
+  end;
+  if IsList(TypeInfo(T))then begin
+    if not Assigned(Delegate) then
+       Initialize;
+    result := TORM.New<V>(Delegate.GetOwner)
+  end
+  else
+    raise Exception.Create('Invalid typecast');
+end;
+
+procedure Relation<T>.Put(const Value: T);
+begin
+  Delegate.Put(TValue.From<T>(Value));
 end;
 
 function Relation<T>.Get: T;
-var LVal : TValue;
-
+var
+  LVal : TValue;
+  p:IInterface;
+  Ctx: TRttiContext;
+  LType: TRttiType;
 begin
-  if Rec.Delegate = nil then
+  if not Assigned(Delegate) then
     Initialize;
-  LVal := Rec.Delegate.Get;
-  if LVal.IsObject then
-    result := T(Lval.AsObject)
-
+  LVal := Delegate.Get;
+  LType := Ctx.GetType(TypeInfo(T));
+  if LType is TRttiInterfaceType then
+  begin
+    p:= Lval.AsInterface;
+    p.QueryInterface(TrttiInterfaceType(LType).GUID, result);
+    p._AddRef;
+  end
+  else
+    result := LVal.AsType<T>;
+  //LVal.ExtractRawData(@result);
+  //result := T(Lval.AsInterface);
+//  if LVal.TypeInfo.Kind = tkInterface  then
+//    result := T(LVal.AsInterface)
+//  else
+   // result := T(LVal.AsObject);
+  //result := LVal.AsType<T>
+  // Check result := LVal.AsType<T>
+//  if LVal.IsObject then
+//    result := T(Lval.AsObject)
 end;
 
-class operator Relation<T>.Implicit(const Value: T): Relation<T>;
+function Relation<T>.GetTypeInfo: PTypeInfo;
 begin
-  result.Initialize;
-  result.Rec.Delegate.Put(T);
+  result := TypeInfo(T);
 end;
+
+//class operator Relation<T>.Implicit(const Value: T): Relation<T>;
+//begin
+//  result.Initialize;
+//  result.Delegate.Put(T);
+//end;
 
 procedure Relation<T>.Initialize;
 begin
-  Rec.Delegate := Factory.Get<ILoadDelegate>;
-  Rec.Delegate.SetRelation(@self, TypeInfo(T));
+  if not Assigned(Delegate) then
+  begin
+    Delegate := Factory.Get<ILoadDelegate>;
+    Delegate.SetReturnType(TypeInfo(T));
+  end;
 end;
 
 { TColumn }
@@ -311,53 +504,200 @@ end;
 constructor TColumn.Create(AName: String; AValue: TValue);
 begin
   Name := AName;
-  AValue := AValue;
+  Value := AValue;
 end;
-
 
 { TORM }
 
-class procedure TORM.Delete<T>(AValue: T);
+class procedure TORM.Delete(Value: TObject);
 var
   LOrm: IORM;
 
 begin
   LOrm := Factory.Get<IOrm>;
-  LOrm.Save(TValue.From<T>(AValue));
+  LOrm.Delete(Value);
+end;
+
+class procedure TORM.Delete(Value: IInterface);
+
+begin
+  TORM.Delete(Value As TObject);
+end;
+
+
+class function TORM.Exec(FuncName: String;
+  Parameters: array of TParameter): TValue;
+var
+  LDataManager: IDataManager;
+begin
+  LDataManager := Factory.Get<IDataManager>;
+  result := LDataManager.Execute(FuncName, Parameters);
 end;
 
 class function TORM.Load<T>(AProviderName: String;
-  AParameters: TArray<TParameter>): T;
+  AParameters: Array Of TParameter; ALoadProc: TORMOnLoadValue): T;
+var
+  LOrm: IORM;
+  V:TValue;
+  LParams: TArray<TParameter>;
+  i: integer;
+begin
+  LOrm := Factory.Get<IOrm>;
+  SetLength(LParams,High(AParameters)+1);
+  for i:= 0 to High(AParameters) do
+    LParams[i] := AParameters[i];
+  V:= LOrm.Load(TypeInfo(T),AProviderName,LParams,ALoadProc);
+  result := V.AsType<T>; //.Load(TypeInfo(T),AProviderName,AParameters,ALoadProc).AsType<T>
+end;
+
+
+class function TORM.Load<T>(AKeyValues: Array of TValue;
+  ALoadProc: TORMOnLoadValue): T;
 var
   LOrm: IORM;
 begin
   LOrm := Factory.Get<IOrm>;
-  result := LOrm.Load(TypeInfo(T),AProviderName,AParameters).AsType<T>;
+  result := LOrm.Load(TypeInfo(T),AKeyValues, ALoadProc).AsType<T>
 end;
 
-class function TORM.Load<T>(AKeyValues: array of const): T;
+
+class function TORM.Load<T>(AParameters: Array of TParameter;
+  ALoadProc: TORMOnLoadValue): T;
+var LParams: TArray<TParameter>;
+    i: integer;
+begin
+  SetLength(LParams,High(AParameters)+1);
+  for i:= 0 to High(AParameters) do
+    LParams[i] := AParameters[i];
+
+  result := TORM.Load<T>('',LParams, ALoadProc);
+end;
+
+
+class function TORM.New<T>(AOwner: TObject): T;
+var
+  LOrm : IORM;
+  LCtx: TRttiContext;
+  LObj: TValue;
+  LType: TRttiType;
+begin
+  LOrm := Factory.Get<IOrm>;
+  LObj := LOrm.New(TypeInfo(T), AOwner);
+  result := Lobj.AsType<T>;
+end;
+
+class function TORM.New<T>: T;
+begin
+  result := New<T>(NIL);
+end;
+
+
+class function TORM.ObjectState(AObject: TObject; out ObjStatus: TORMObjectStatus): boolean;
+var
+  LIObjState: IObjectState;
+
+begin
+  LIObjState := Factory.Get<IObjectState>;
+  if LIObjState = nil then exit(false);
+
+  ObjStatus := LIobjState.GetFieldValues(AObject);
+  result := TRUE;
+end;
+
+
+class procedure TORM.Save(Value: TObject);
 var
   LOrm: IORM;
 begin
   LOrm := Factory.Get<IOrm>;
-  result := LOrm.Load(TypeInfo(T),AKeyValues).AsType<T>;
+  LOrm.Save(Value);
 end;
 
-class function TORM.Load<T>(AParameters: TArray<TParameter>): T;
+class procedure TORM.Save(Value: IInterface);
+begin
+  TOrm.Save(Value as TObject);
+end;
+
+class procedure TORM.CancelChanges(Value: TObject);
 var
   LOrm: IORM;
 begin
   LOrm := Factory.Get<IOrm>;
-  result := LOrm.Load(TypeInfo(T),'',AParameters).AsType<T>;
+  LOrm.CancelChanges(Value);
 end;
 
-class procedure TORM.Save<T>(AValue: T);
-var
-  LOrm: IORM;
-
+class procedure TORM.CancelChanges(Value: IInterface);
 begin
-  LOrm := Factory.Get<IOrm>;
-  LOrm.Save(TValue.From<T>(AValue));
+  TORM.CancelChanges(Value as TObject);
 end;
+
+
+class function TORM.GetOwner<T>(Value: TObject): T;
+var
+  LObjState: IObjectState;
+  LOwnerVal : TValue;
+begin
+  LObjState := Factory.Get<IObjectState>;
+  LOwnerVal := LObjState.GetOwner(Value);
+  result := LOwnerVal.AsType<T>;
+end;
+
+class procedure TORM.ForEach<T>(AProcessProc: TORMProcessValue<T>;
+        AParameters: Array of TParameter; FreeObjects: Boolean; AProviderName: String);
+var
+  LList: TForEachList<T>;
+  LListFree: TForEachListFreeObject<T>;
+  LParams: TArray<TParameter>;
+  i: integer;
+begin
+  if Not Assigned(AProcessProc) then
+    Exit;
+
+  SetLength(LParams,High(AParameters)+1);
+  for i:= 0 to High(AParameters) do
+    LParams[i] := AParameters[i];
+  if not FreeObjects then
+  begin
+    LList := TORM.Load<TForEachList<T>>(AProviderName, LParams,
+        procedure (const AValue: TValue)
+        begin
+          AProcessProc(AValue.AsType<T>);
+        end);
+    LList.Free;
+  end
+  else
+  begin
+    LListFree := TORM.Load<TForEachListFreeObject<T>>(AProviderName, LParams,
+        procedure (const AValue: TValue)
+        begin
+          AProcessProc(AValue.AsType<T>);
+        end);
+    LListFree.Free;
+  end;
+end;
+
+
+{ TForEachList<T> }
+
+procedure TForEachList<T>.Add(const AValue: T);
+begin
+end;
+
+
+function TForEachList<T>.GetEnumerator: TObject;
+begin
+  result := nil;
+end;
+
+{ TForEachListFreeObject<T> }
+
+procedure TForEachListFreeObject<T>.Add(const AValue: T);
+begin
+     if PTypeInfo(TypeInfo(T)).Kind = tkClass then
+     TObject(Pointer(@AValue)^).Free;
+end;
+
 
 end.
+
+

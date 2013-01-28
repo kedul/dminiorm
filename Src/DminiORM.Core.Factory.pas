@@ -107,7 +107,10 @@ begin
     if LRec.AClass<>nil then
       Result := LRec.AClass
     else
-      Result := (LRec.Instance as TInterfacedObject).ClassType;
+      if LRec.Instance<>nil then
+        Result := (LRec.Instance as TInterfacedObject).ClassType
+      else
+        Result := NIL;
   finally
     LCtx.Free;
   end;
@@ -135,7 +138,9 @@ begin
               LType.Name);
 
       if Assigned(LRec.Instance) then
+      begin
         Exit(TValue.From(LRec.Instance));
+      end;
 
       LType := LCtx.GetType(LRec.AClass.ClassInfo);
       LClass := LRec.AClass;
