@@ -18,52 +18,102 @@ unit DminiORM.Core.DefObjStateImpl;
 
 interface
 
-Uses DminiORM.Core, Rtti, DminiORM.Core.Factory;
+Uses DminiORM.Core, Rtti, DminiORM.Core.Factory, Emballo.SynteticClass,
+  TypInfo, SysUtils, DMiniORM.Core.RttiHelpers;
 
 implementation
+
 
 type
 
   TObjectState = Class(TInterfacedObject, IObjectState)
   public
-    function GetFieldValues(AObject: TObject; AMap: IMapDefinition): TORMObjectStatus;
+    function GetFieldValues(AObject: TObject): TORMObjectStatus;
+    function GetOwner(AObject: TObject): TObject;
   End;
 
   { TObjectState }
 
-function TObjectState.GetFieldValues(AObject: TObject; AMap: IMapDefinition)
-  : TORMObjectStatus;
+function TObjectState.GetFieldValues(AObject: TObject): TORMObjectStatus;
 var
   LObjStatus: TORMObjectStatus;
-  LColumns: TArray<TColumnClassRelation>;
-  LColumn: TColumnClassRelation;
+  LColumns: TArray<TClassMemberMap>;
+  LColumn: TClassMemberMap;
   LDetails: TArray<TRelationDescription>;
   LDetail: TRelationDescription;
-  LDetailRec: PRelationRec;
   LDetailObject: TObject;
   LKeyIndex, LIndex: integer;
+  LIsOrmClass: Boolean;
+  LStatusRec: PStateRec;
+  LMap: IMapDefinition;
+  LMapManager: IMapManager;
+  LEntityName: String;
+
+  function GetOldValue(ColumnName: String; out Value: TValue): boolean;
+  begin
+    result := LStatusRec.Data.TryGet(ColumnName, Value);
+  end;
+
+  procedure SetMasterValues(AStatusRec: PStateRec; LMap: IMapDefinition);
+  var
+    LMasterDesc: TMasterDescription;
+    LMasterDetailMember: TMasterDetailMembers;
+  begin
+    if Assigned(AStatusRec.Owner) then
+    begin
+      for LMasterDesc  in LMap.GetMastersInfo do
+        if (LMasterDesc.MasterClassType.Handle = AStatusRec.Owner.ClassInfo) OR
+            (LMasterDesc.MasterClassType.Handle = AStatusRec.Owner.ClassParent.ClassInfo) then
+        begin
+          for LMasterDetailMember in LMasterDesc.MasterDetailRelationShip do
+          begin
+            LMasterDetailMember.DetailField.SetValue(AObject,
+              LMasterDetailMember.MasterField.GetValue(AStatusRec.Owner));
+          end;
+          break;
+        end;
+    end;
+  end;
 
 begin
-  if AMap.GetFieldValues <> nil then
-    Exit(AMap.GetFieldValues.Invoke(AObject, []).AsType<TORMObjectStatus>);
+  LMapManager := Factory.Get<IMapManager>;
+  if (LMapManager=nil) then
+    raise Exception.Create('Can''t find a IMapManager implementation.');
 
-  LColumns := AMap.GetColumnsMapInfo;
-  LDetails := AMap.GetDetailsInfo;
+  LMap := LMapManager.Get(PTypeInfo(AObject.ClassInfo));
+  if (LMap=nil) then
+    raise Exception.Create('Can''t find a IMap implementation for '+
+        PTypeInfo(AObject.ClassInfo).Name);
 
-  LObjStatus.State := osUnknow;
-  LObjStatus.EnitityName := AMap.GetEntityName;
-  SetLength(LObjStatus.Fields, Length(LColumns) + Length(LDetails));
+  if LMap.GetFieldValues <> nil then
+    Exit(LMap.GetFieldValues.Invoke(AObject, []).AsType<TORMObjectStatus>);
+
+  LColumns := LMap.GetColumnsMapInfo;
+  LDetails := LMap.GetDetailsInfo;
+  LIsOrmClass := Copy(AObject.ClassName, Length(AObject.ClassName)-3, 4) ='_ORM';
+
+
+  if LIsOrmClass then begin
+    LStatusRec := GetAditionalData(AObject);
+    SetMasterValues(LStatusRec,LMap);
+    LObjStatus.State := LStatusRec.State;
+
+  end
+  else
+    LObjStatus.State := osUnknow;
+
+  // LObjStatus.EnitityName := LMap.GetEntityName;
+  SetLength(LObjStatus.Fields, Length(LColumns));// + Length(LDetails));
   LKeyIndex := 0;
   LIndex := 0;
 
   for LColumn in LColumns do
   begin
-    LObjStatus.Fields[LIndex].ProperyName := LColumn.ClassMember.Name;
-    LObjStatus.Fields[LIndex].ColumnName := LColumn.ColumnName;
-    LObjStatus.Fields[LIndex].IsDetailField := FALSE;
+    LObjStatus.Fields[LIndex].ObjMember := LColumn.ClassMember;
+    LObjStatus.Fields[LIndex].ColumnName := LColumn.Column;
 
-    if (LKeyIndex < Length(AMap.GetKeyInfo)) and
-      (AMap.GetKeyInfo[LKeyIndex].ClassMember.Name = LColumn
+    if (LKeyIndex < Length(LMap.GetKeyInfo)) and
+      (LMap.GetKeyInfo[LKeyIndex].ClassMember.Name = LColumn
       .ClassMember.Name) then
     begin
       inc(LKeyIndex);
@@ -79,26 +129,35 @@ begin
       LObjStatus.Fields[LIndex].NewValue := TRttiProperty(LColumn.ClassMember)
         .GetValue(AObject);
 
-    LObjStatus.Fields[LIndex].OldValue := LObjStatus.Fields[LIndex].NewValue;
+    if LIsOrmClass then
+    begin
+      if not GetOldValue(LColumn.Column, LObjStatus.Fields[LIndex].OldValue) then
+        LObjStatus.Fields[LIndex].OldValue := LObjStatus.Fields[LIndex].NewValue
+      else
+        LObjStatus.Fields[LIndex].HasOldValueInfo := TRUE;
+    end
+    else
+      LObjStatus.Fields[LIndex].OldValue := LObjStatus.Fields[LIndex].NewValue;
     inc(LIndex);
   end;
 
-  for LDetail in LDetails do
+  if  (LObjStatus.State<>osNew) AND LIsORMClass and LObjStatus.IsModified then
   begin
-    LDetailRec := PRelationRec(LDetail.MasterProperty.GetValue(AObject).GetReferenceToRawData);
-    LObjStatus.Fields[LIndex].ProperyName := LDetail.MasterProperty.Name;
-    LObjStatus.Fields[LIndex].IsDetailField := TRUE;
-    LObjStatus.Fields[Lindex].IsKeyField := FALSE;
-//    LObjStatus.Fields[LIndex].NewValue := TValue.From<TORMObjectStatus>(
-//      GetFieldValues(LDetailRec.Delegate.AsObject,
-//        LDetailRec.Orm.));
+    LObjStatus.State := osModified;
+    LStatusRec.State := osModified;
   end;
 
   result := LObjStatus;
 end;
 
+function TObjectState.GetOwner(AObject: TObject): TObject;
+begin
+  if Copy(AObject.ClassName, Length(AObject.ClassName)-3, 4) ='_ORM' then
+    result := PStateRec(GetAditionalData(AObject)).Owner
+  else
+    result := nil;
+end;
+
 initialization
-
-Factory.Register(IObjectState, TObjectState);
-
+  Factory.Register(IObjectState, TObjectState.Create);
 end.

@@ -17,9 +17,11 @@ unit DminiORM.VCLDataSetAdapter;
 
 interface
 
-Uses Data.DB, DminiORM.Core, System.Rtti, Variants, Dialogs, DBClient;
+Uses Data.DB, DminiORM.Core, System.Rtti, Variants, Dialogs, DBClient, SysUtils;
 
 Type
+
+
   TDataSetAdapter = class(TInterfacedObject, IDataReader, IDataWriter)
   private
     FDataSet: TDataSet;
@@ -37,7 +39,7 @@ Type
     function GetRecNo: integer;
     function GetRowColumn(ColumnName: String; out Value: TValue): Boolean;
     function Save(Records: TArray<TORMObjectStatus>): TArray<TDataRow>;
-    procedure Delete(RecKeys: TArray<TORMObjectStatus>);
+    procedure Delete(RecKeys: TArray<TDataRow>);
     property EOF: Boolean read GetEOF;
     property RecNo: integer read GetRecNo;
     property DataRow: TDataRow read GetDataRow;
@@ -60,12 +62,9 @@ begin
     FRecNo := 1
 end;
 
-procedure TDataSetAdapter.Delete(RecKeys: TArray<TORMObjectStatus>);
-var
-  LKey: TORMObjectStatus;
+procedure TDataSetAdapter.Delete(RecKeys: TArray<TDataRow>);
 begin
-  for LKey in RecKeys do
-    if LocateRec(LKey.KeyFields) then FDataSet.Delete;
+  FDataSet.Delete;
 end;
 
 procedure TDataSetAdapter.DeleteRec(ARec: TORMObjectStatus);
@@ -98,6 +97,8 @@ end;
 
 destructor TDataSetAdapter.destroy;
 begin
+  if FDataSet.State<>dsBrowse then
+    FDataSet.Cancel;
   if FOwned then
     FDataSet.Free;
 end;
@@ -156,7 +157,10 @@ begin
   if Length(KeyInfo) = 1 then
   begin
     LFilterText := KeyInfo[0].ColumnName;
-    LKeyValues := KeyInfo[0].OldValue.AsVariant;
+    if KeyInfo[0].HasOldValueInfo then
+      LKeyValues := KeyInfo[0].OldValue.AsVariant
+    else
+      LKeyValues := KeyInfo[0].NewValue.AsVariant
   end
   else
   begin
@@ -168,7 +172,10 @@ begin
     for LORMField in KeyInfo do
     begin
       LFilterText := LFilterText + LORMField.ColumnName +';';
-      LKeyValues[i] := LORMField.OldValue.AsVariant;
+      if LORMField.HasOldValueInfo then
+        LKeyValues[i] := LORMField.OldValue.AsVariant
+      else
+        LKeyValues[i] := LORMField.NewValue.AsVariant
     end;
 
     LFilterText:= Copy(LFilterText, Length(LFilterText), 1);
@@ -213,7 +220,7 @@ begin
       if ARec.State = osUnknow then
         FDataSet.Append
       else
-        Exit(nil)
+        raise Exception.Create('Can''t modify a record. Not found.');
   end;
   try
     for LORMField in ARec.Fields do
@@ -221,7 +228,9 @@ begin
       begin
         LField:= FDataSet.FindField(LORMField.ColumnName);
         if (LField<>nil) and not LField.ReadOnly then
-           LField.AsVariant := LORMField.NewValue.AsVariant;
+          if LORMField.NewValue.TypeInfo = TypeInfo(Boolean) then
+             LField.AsBoolean := LORMField.NewValue.AsType<Boolean>
+           else LField.AsVariant := LORMField.NewValue.AsVariant;
       end;
 
     FDataSet.Post;
@@ -229,15 +238,15 @@ begin
     SetLength(Result, FDataSet.FieldCount);
     i := 0;
 
-    for LORMField in ARec.Fields do
-    begin
-      LField:= FDataSet.FindField(LORMField.ColumnName);
-      if (LField<>nil) and not VarSameValue(LORMField.NewValue.AsVariant, LField.AsVariant) then
-      begin
-        Result[i].Create( LField.FieldName, TValue.FromVariant(LField.AsVariant));
-        inc(i);
-      end;
-    end;
+//    for LORMField in ARec.Fields do
+//    begin
+//      LField:= FDataSet.FindField(LORMField.ColumnName);
+//      if (LField<>nil) and not VarSameValue(LORMField.NewValue.AsVariant, LField.AsVariant) then
+//      begin
+//        Result[i].Create( LField.FieldName, TValue.FromVariant(LField.AsVariant));
+//        inc(i);
+//      end;
+//    end;
 
     SetLength(Result, i);
   except
