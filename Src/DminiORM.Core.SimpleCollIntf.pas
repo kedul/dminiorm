@@ -9,9 +9,14 @@ Type
   ISimpleDictionary<K,V> = Interface
     procedure Put(Key: K; const Value: V);
     function Get(Key: K): V;
+    procedure Remove(const Key: K);
     function TryGet(Key: K; out Value: V): boolean;
     function ContainsKey(Key: K): boolean;
     function Size: integer;
+    function Values: TArray<V>;
+    function Keys: TArray<K>;
+    function GetEnumerator: TEnumerator<TPair<K,V>>;
+    procedure Clear;
     property Items[Key:K]: V read Get write Put; default;
   End;
 
@@ -23,15 +28,25 @@ Type
     destructor destroy; override;
     procedure Put(Key: K; const Value: V);
     function Get(Key: K): V;
+    procedure Remove(const Key: K);
     function TryGet(Key: K; out Value: V): boolean;
     function ContainsKey(Key: K): boolean;
+    function Values: TArray<V>;
+    function Keys: TArray<K>;
     function Size: integer;
+    function GetEnumerator: TEnumerator<TPair<K,V>>;
+    procedure Clear;
   end;
 
 implementation
 
 
 { TSimpleDictionary<K, V> }
+
+procedure TSimpleDictionary<K, V>.Clear;
+begin
+  FDictionary.Clear;
+end;
 
 function TSimpleDictionary<K, V>.ContainsKey(Key: K): boolean;
 begin
@@ -54,9 +69,24 @@ begin
   result := FDictionary[Key]
 end;
 
+function TSimpleDictionary<K, V>.GetEnumerator: TEnumerator<TPair<K,V>>;
+begin
+  result := FDictionary.GetEnumerator;
+end;
+
+function TSimpleDictionary<K, V>.Keys: TArray<K>;
+begin
+  result := FDictionary.Keys.ToArray;
+end;
+
 procedure TSimpleDictionary<K, V>.Put(Key: K; const Value: V);
 begin
   FDictionary.AddOrSetValue(Key,Value);
+end;
+
+procedure TSimpleDictionary<K, V>.Remove(const Key: K);
+begin
+  FDictionary.Remove(Key);
 end;
 
 function TSimpleDictionary<K, V>.Size: integer;
@@ -67,6 +97,11 @@ end;
 function TSimpleDictionary<K, V>.TryGet(Key: K; out Value: V): boolean;
 begin
   result := FDictionary.TryGetValue(Key, Value);
+end;
+
+function TSimpleDictionary<K, V>.Values: TArray<V>;
+begin
+  result := FDictionary.Values.ToArray;
 end;
 
 end.

@@ -90,10 +90,10 @@ type
     function GetWriter(EntityName: String): IDataWriter;
     function GetColumnNames(EntityName: String): TArray<String>;
     function Execute(FuncName: String; Parameters: Array of TParameter): TValue;
-    procedure BeginTran;
-    procedure Commit;
-    procedure RollBack;
-    function InTransaction: Boolean;
+//    procedure BeginTran;
+//    procedure Commit;
+//    procedure RollBack;
+//    function InTransaction: Boolean;
   end;
 
   TCustomMapPrototype = procedure(Data: IDataReader) of Object;
@@ -211,10 +211,10 @@ type
   public
     procedure Initialize;
     function GetTypeInfo: PTypeInfo;
-    function Get: T;
-    procedure Put(const Value: T);
     function New<V>: V; overload;
     function New: T; overload;
+    procedure Put(const Value: T);
+    function Get: T;
     class operator Implicit(const Value: Relation<T>): T;
     //class operator Implicit(const Value: T): Relation<T>;
   end;
@@ -283,7 +283,15 @@ begin
   if not HasOldValueInfo then
     result := TRUE
   else
+  begin
+    if OldValue.IsEmpty And NewValue.IsEmpty then
+      Exit(False);
+    if OldValue.IsEmpty OR NewValue.IsEmpty then
+      Exit(True);
+    if OldValue.TypeInfo = TypeInfo(Boolean) then
+      Exit(OldValue.AsBoolean<>NewValue.AsBoolean);
     result := not SameText(VarToStr(OldValue.AsVariant), VarToStr(NewValue.AsVariant))
+  end;
 end;
 
 function TORMField.New: TColumn;
@@ -454,29 +462,11 @@ var
   p:IInterface;
   Ctx: TRttiContext;
   LType: TRttiType;
+  Q: TInterfacedObject;
 begin
   if not Assigned(Delegate) then
     Initialize;
-  LVal := Delegate.Get;
-  LType := Ctx.GetType(TypeInfo(T));
-  if LType is TRttiInterfaceType then
-  begin
-    p:= Lval.AsInterface;
-    p.QueryInterface(TrttiInterfaceType(LType).GUID, result);
-    p._AddRef;
-  end
-  else
-    result := LVal.AsType<T>;
-  //LVal.ExtractRawData(@result);
-  //result := T(Lval.AsInterface);
-//  if LVal.TypeInfo.Kind = tkInterface  then
-//    result := T(LVal.AsInterface)
-//  else
-   // result := T(LVal.AsObject);
-  //result := LVal.AsType<T>
-  // Check result := LVal.AsType<T>
-//  if LVal.IsObject then
-//    result := T(Lval.AsObject)
+  Exit(Delegate.Get.AsType<T>);
 end;
 
 function Relation<T>.GetTypeInfo: PTypeInfo;
@@ -489,6 +479,7 @@ end;
 //  result.Initialize;
 //  result.Delegate.Put(T);
 //end;
+
 
 procedure Relation<T>.Initialize;
 begin
@@ -642,6 +633,23 @@ begin
   result := LOwnerVal.AsType<T>;
 end;
 
+Type
+  TVal = class
+  public
+    class function AsType<T>(Value: TValue): T; static;
+  end;
+
+class function TVal.AsType<T>(Value: TValue): T;
+begin
+//  if Value.Kind= tkInterface then
+//  begin
+//    Value.AsInterface.QueryInterface(Value.TypeData.Guid, result);
+//  end
+//  else
+    result := Value.AsType<T>;
+
+end;
+
 class procedure TORM.ForEach<T>(AProcessProc: TORMProcessValue<T>;
         AParameters: Array of TParameter; FreeObjects: Boolean; AProviderName: String);
 var
@@ -649,6 +657,7 @@ var
   LListFree: TForEachListFreeObject<T>;
   LParams: TArray<TParameter>;
   i: integer;
+
 begin
   if Not Assigned(AProcessProc) then
     Exit;
@@ -661,7 +670,7 @@ begin
     LList := TORM.Load<TForEachList<T>>(AProviderName, LParams,
         procedure (const AValue: TValue)
         begin
-          AProcessProc(AValue.AsType<T>);
+           AProcessProc(AValue.AsType<T>);
         end);
     LList.Free;
   end
@@ -670,7 +679,7 @@ begin
     LListFree := TORM.Load<TForEachListFreeObject<T>>(AProviderName, LParams,
         procedure (const AValue: TValue)
         begin
-          AProcessProc(AValue.AsType<T>);
+           AProcessProc(AValue.AsType<T>);
         end);
     LListFree.Free;
   end;
@@ -693,11 +702,12 @@ end;
 
 procedure TForEachListFreeObject<T>.Add(const AValue: T);
 begin
-     if PTypeInfo(TypeInfo(T)).Kind = tkClass then
+  if PTypeInfo(TypeInfo(T)).Kind = tkClass then
      TObject(Pointer(@AValue)^).Free;
 end;
 
 
 end.
+
 
 

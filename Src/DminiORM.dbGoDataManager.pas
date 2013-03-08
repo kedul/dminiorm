@@ -4,7 +4,7 @@ interface
 
 Uses DminiORM.Core, Data.Win.ADODB, IniFiles, SysUtils, Classes, Rtti,
   DminiORM.VCLDataSetAdapter, StrUtils, DminiORM.Core.Factory, DB,
-  Generics.Collections, Variants;
+  Generics.Collections, Variants, DminiORM.Core.SimpleCollIntf;
 
 type
 
@@ -12,28 +12,34 @@ type
 
   TdbGoDataManager = class (TInterfacedObject, IDataManager)
   private
-    class var FConnection: TADOConnection;
+    class var FCnPool: TList<TADOConnection>;
     class var FProviders: THashedStringList;
+    class var FConnectionString: String;
     function TryGetProvider(const ProviderName: STring; out CommandText: String): boolean;
     class function GetConnectionString: String; static;
     class procedure SetConnectionString(const Value: String); static;
     class procedure Log(Text: String);
     class var FOnLog: TOnLog;
-    FTranCount : Integer;
+
+    // FTranCount : Integer;
   public
+    class constructor create;
+    class destructor destroy;
     class property ConnectionString: String read GetConnectionString write SetConnectionString;
     class procedure RegisterProvider(const AProviderName, AProviderCommandText: String); overload;
     class procedure RegisterProvider(const AProviderName, AProviderReader, AProviderInserter, AProviderUpdater, AProviderDeleter: String); overload;
     class procedure LoadProviderFromFile(const FileName: String);
     class property OnLog: TOnLog read FOnLog write FOnLog;
+    class function AdquireConnection: TADOConnection;
+    class procedure RealeaseConnection(cn: TADOConnection);
     function GetReader(ProviderName: string;
       Parameters: System.TArray<DminiORM.Core.TColumn>): IDataReader;
     function GetWriter(EntityName: string): IDataWriter;
     function GetColumnNames(EntityName: String): TArray<String>;
-    procedure BeginTran;
-    procedure Commit;
-    procedure RollBack;
-    function InTransaction: Boolean;
+//    procedure BeginTran;
+//    procedure Commit;
+//    procedure RollBack;
+//    function InTransaction: Boolean;
     function Execute(FuncName: string; Parameters: array of TColumn): TValue;
   end;
 
@@ -116,15 +122,18 @@ begin
       end;
     end;
 
-    LCommand.Connection := TdbGoDataManager.FConnection;
-    LCommand.CommandText := LCmdText.ToString;
+    LCommand.Connection := TdbGoDataManager.AdquireConnection;
+    try
+      LCommand.CommandText := LCmdText.ToString;
 
-    for LRow in RecKeys do
-      for i:=0 to Length(LRow)-1  do
-        LCommand.Parameters.AddParameter.Value := LRow[i].Value.AsVariant;
+      for LRow in RecKeys do
+        for i:=0 to Length(LRow)-1  do
+          LCommand.Parameters.AddParameter.Value := LRow[i].Value.AsVariant;
 
-    LCommand.Execute;
-
+      LCommand.Execute;
+    finally
+      TdbGoDataManager.RealeaseConnection(LCommand.Connection);
+    end;
   finally
     LCommand.Free;
     LCmdText.Free;
@@ -142,7 +151,7 @@ var
   LWhereCmd: String;
   LAdapter: IDataWriter;
   LInsSp, LUpdSp, LDelSP, LSp: TADOStoredProc;
-  LDataManager: IDataManager;
+  LConnection : TADOCOnnection;
 
   procedure SetParamValue(SP: TADOStoredProc; Fld: TORMField);
   var
@@ -164,133 +173,136 @@ var
   end;
 
 begin
-  if FEntityName<>'' then
-  begin
-    LWhere := TStringList.Create;
-    LQuery := TADOQuery.Create(nil);
-    try
-      LQuery.Connection := TdbGoDataManager.FConnection;
-
-      for LObjStatus in Records do
-      begin
-        if (LobjStatus.State in [osModified, osUnknow]) then
+  LConnection := TdbGoDataManager.AdquireConnection;
+  try
+    if FEntityName<>'' then
+    begin
+      LWhere := TStringList.Create;
+      LQuery := TADOQuery.Create(nil);
+      LQuery.Connection := LConnection;
+      try
+        for LObjStatus in Records do
         begin
-          LWhere.Append('(');
-          for LFld in LObjStatus.Fields do
+          if (LobjStatus.State in [osModified, osUnknow]) then
           begin
-            if LFld.IsKeyField then begin
-              LWhere.Append('"'+LFld.ColumnName+'" = ? ');
-              LWhere.Append('AND ');
-            end;
-          end;
-          LWhere.Delete(LWhere.Count-1);
-          LWhere.Append(') ');
-          LWhere.Append('OR ');
-        end;
-      end;
-
-      if LWhere.Count>0 then
-        LWhere.Delete(LWhere.Count-1);
-      LWhereCmd := LWhere.Text;
-
-      if (LWhereCmd='') then
-      begin
-        LQuery.SQL.Text := 'SELECT * FROM "'+FEntityName+'"';
-        LQuery.MaxRecords := 1;
-      end
-      else
-        LQuery.SQL.Text := 'SELECT * FROM "'+FEntityName+'" WHERE '+
-          Copy(LWhereCmd,1, Length(LWhereCmd)-3);
-
-      i:=0;
-
-      for LObjStatus in Records do
-        if (LobjStatus.State in [osModified, osUnknow]) then
-        begin
-          for LFld in LObjStatus.Fields do
-            if LFld.IsKeyField then
+            LWhere.Append('(');
+            for LFld in LObjStatus.Fields do
             begin
-              if LFld.HasOldValueInfo then
-                LQuery.Parameters[i].Value := LFld.OldValue.AsVariant
-              else
-                LQuery.Parameters[i].Value := LFld.NewValue.AsVariant;
-              inc(i);
+              if LFld.IsKeyField then begin
+                LWhere.Append('"'+LFld.ColumnName+'" = ? ');
+                LWhere.Append('AND ');
+              end;
             end;
+            LWhere.Delete(LWhere.Count-1);
+            LWhere.Append(') ');
+            LWhere.Append('OR ');
+          end;
         end;
-      LQuery.CursorLocation := clUseClient;
-      LQuery.CursorType := ctStatic;
-      LQuery.LockType := ltBatchOptimistic;
-      LQuery.Open;
 
-      LAdapter := TDataSetAdapter.Create(LQuery);
-      result := LAdapter.Save(Records);
-      LQuery.UpdateBatch;
+        if LWhere.Count>0 then
+          LWhere.Delete(LWhere.Count-1);
+        LWhereCmd := LWhere.Text;
 
-    finally
-      LWhere.Free;
-      LQuery.Free;
-    end;
-  end
-  else begin
-    LDataManager := Factory.Get<IDataManager>;
-    try
-      LDataManager.BeginTran;
+        if (LWhereCmd='') then
+        begin
+          LQuery.SQL.Text := 'SELECT * FROM "'+FEntityName+'"';
+          LQuery.MaxRecords := 1;
+        end
+        else
+          LQuery.SQL.Text := 'SELECT * FROM "'+FEntityName+'" WHERE '+
+            Copy(LWhereCmd,1, Length(LWhereCmd)-3);
+
+        i:=0;
+
+        for LObjStatus in Records do
+          if (LobjStatus.State in [osModified, osUnknow]) then
+          begin
+            for LFld in LObjStatus.Fields do
+              if LFld.IsKeyField then
+              begin
+                if LFld.HasOldValueInfo then
+                  LQuery.Parameters[i].Value := LFld.OldValue.AsVariant
+                else
+                  LQuery.Parameters[i].Value := LFld.NewValue.AsVariant;
+                inc(i);
+              end;
+          end;
+        LQuery.CursorLocation := clUseClient;
+        LQuery.CursorType := ctStatic;
+        LQuery.LockType := ltBatchOptimistic;
+        LQuery.Open;
+
+        LAdapter := TDataSetAdapter.Create(LQuery);
+        result := LAdapter.Save(Records);
+        LQuery.UpdateBatch;
+
+      finally
+        LWhere.Free;
+        LQuery.Free;
+      end;
+    end
+    else
+    begin
       LInsSp := TADOStoredProc.Create(nil);
       LUpdSp := TADOStoredProc.Create(nil);
       LDelSp := TADOStoredProc.Create(nil);
       try
-        LInsSp.Connection := TdbGoDataManager.FConnection;
-        LDelSp.Connection := TdbGoDataManager.FConnection;
-        LUpdSp.Connection := TdbGoDataManager.FConnection;
-        for LObjStatus in Records do
-        begin
-          case LobjStatus.State of
-            osModified : begin
-              if LUpdSp.ProcedureName = '' then
-              begin
-                LUpdSp.ProcedureName := FUpdateComandText;
-                LUpdSp.Parameters.Refresh;
-                LUpdSp.Parameters.Delete(0);
+        LInsSp.Connection := LConnection;
+        LDelSp.Connection := LConnection;
+        LUpdSp.Connection := LConnection;
+        LConnection.BeginTrans;
+        try
+          for LObjStatus in Records do
+          begin
+            case LobjStatus.State of
+              osModified : begin
+                if LUpdSp.ProcedureName = '' then
+                begin
+                  LUpdSp.ProcedureName := FUpdateComandText;
+                  LUpdSp.Parameters.Refresh;
+                  LUpdSp.Parameters.Delete(0);
+                end;
+                LSp := LUpdSp;
               end;
-              LSp := LUpdSp;
+              osNew : begin
+                if LInsSp.ProcedureName = '' then
+                begin
+                  LInsSp.ProcedureName := FUpdateComandText;
+                  LInsSp.Parameters.Refresh;
+                  LInsSp.Parameters.Delete(0);
+                end;
+                LSp := LInsSp;
+              end;
+              osDeleted: begin
+                if LDelSp.ProcedureName = '' then
+                begin
+                  LDelSp.ProcedureName := FUpdateComandText;
+                  LDelSp.Parameters.Refresh;
+                  LDelSp.Parameters.Delete(0);
+                end;
+                LSp := LDelSp;
+              end
+              else
+                raise exception.Create('Unsupported status mode: osUnknow');
             end;
-            osNew : begin
-              if LInsSp.ProcedureName = '' then
-              begin
-                LInsSp.ProcedureName := FUpdateComandText;
-                LInsSp.Parameters.Refresh;
-                LInsSp.Parameters.Delete(0);
-              end;
-              LSp := LInsSp;
-            end;
-            osDeleted: begin
-              if LDelSp.ProcedureName = '' then
-              begin
-                LDelSp.ProcedureName := FUpdateComandText;
-                LDelSp.Parameters.Refresh;
-                LDelSp.Parameters.Delete(0);
-              end;
-              LSp := LDelSp;
-            end
-            else
-              raise exception.Create('Unsupported status mode: osUnknow');
+            for LFld in LObjStatus.Fields do
+              SetParamValue(Lsp, LFld);
+            LSp.ExecProc;
+            result := nil;
           end;
-          for LFld in LObjStatus.Fields do
-            SetParamValue(Lsp, LFld);
-          LSp.ExecProc;
-          result := nil;
+          LConnection.CommitTrans;
+        except
+          LConnection.RollbackTrans;
+          raise;
         end;
-
       finally
         LInsSp.Free;
         LDelSp.Free;
         LUpdSp.Free;
       end;
-      LDataManager.Commit;
-    except
-      LDataManager.RollBack;
-      raise;
     end;
+  finally
+    TdbGoDataManager.RealeaseConnection(LConnection);
   end;
 end;
 
@@ -331,6 +343,7 @@ end;
 
 destructor TdbGoReader.destroy;
 begin
+  TdbGoDataManager.RealeaseConnection(DS.Connection);
   DS.Free;
   FFieldsMap.Free;
   inherited;
@@ -391,10 +404,9 @@ begin
     if i>0 then
      LCommandText := Copy(LCommandText,1, i-1);
   end;
-
   LCommand := TADODataSet.Create(NIL);
   try
-    LCommand.Connection := TdbGoDataManager.FConnection;
+    LCommand.Connection := TdbGoDataManager.AdquireConnection;
     LCommand.CommandText := LCommandText;
     if (Length(Parameters)>0) AND StartsText('SELECT', LCommandText) And
       (LCommand.Parameters.Count = 0) then begin
@@ -434,6 +446,7 @@ begin
     result := TdbGoReader.Create(LCommand);
   except
     on e: exception do begin
+      TdbGoDataManager.RealeaseConnection(LCommand.Connection);
       LCommand.free;
       raise Exception.CreateFmt('dbGoDataManager: Can''t execute reader for provider %s.'#13#10'Command: %s.'#13#10'Error: %s',
         [ProviderName,LCommandText, e.Message]);
@@ -524,6 +537,25 @@ begin
   TdbGoDataManager.FProviders.Values[AProviderName] := AProviderCommandText;
 end;
 
+class procedure TdbGoDataManager.RealeaseConnection(cn: TADOConnection);
+begin
+  if (cn=NIL) then Exit;
+  
+  MonitorEnter(FCnPool);
+  try
+  if TdbGODataManager.FCnPool.Count > 5 then
+    cn.Free
+  else
+  begin
+    if cn.InTransaction then
+      cn.RollbackTrans;
+    FCnPool.Add(cn);
+  end;
+  finally
+    MonitorExit(FcnPool);
+  end;
+end;
+
 class procedure TdbGoDataManager.RegisterProvider(const AProviderName,
   AProviderReader, AProviderInserter, AProviderUpdater,
   AProviderDeleter: String);
@@ -560,7 +592,7 @@ begin
 
   LDataSet := TADODataSet.Create(NIL);
   try
-    LDataSet.Connection := TdbGoDataManager.FConnection;
+    LDataSet.Connection := TdbGoDataManager.AdquireConnection;
     LDataSet.CommandText := LCommandText;
     LDataSet.MaxRecords := 1;
     if not StartsText('SELECT ',LCommandText) then
@@ -581,37 +613,64 @@ begin
       Result[i]:=  LDataSet.Fields[i].FieldName;
 
   finally
+    TdbGoDataManager.RealeaseConnection(LDataSet.Connection);
     LDataSet.Free;
   end;
 end;
 
 class function TdbGoDataManager.GetConnectionString;
 begin
-  result := FConnection.ConnectionString;
+  result := FConnectionString;
 end;
 
 class procedure TdbGoDataManager.SetConnectionString(const Value: string);
 begin
-  if FConnection.Connected then FConnection.Close;
-  FConnection.ConnectionString := Value;
-  FConnection.LoginPrompt := FALSE;
-  FConnection.Open;
-end;
-
-procedure TdbGoDataManager.BeginTran;
-begin
-  if FTranCount = 0 then FConnection.BeginTrans;
-  inc(FTranCount);
-end;
-
-procedure TdbGoDataManager.Commit;
-begin
-  if (FTranCount>0) then
+  if not SameText(value, FConnectionString) then
   begin
-    Dec(FTranCount);
-    if FTranCount= 0 then FConnection.CommitTrans;
+    MonitorEnter(FCnPool);
+    try
+      FCnPool.Clear;
+    finally
+      MonitorExit(FCnPool);
+    end;
+    FConnectionString := Value;
   end;
 end;
+
+class function TdbGoDataManager.AdquireConnection: TADOConnection;
+begin
+  MonitorEnter(FCnPool);
+  try
+    if FCnPool.Count>0 then
+    begin
+      result := FCnPool.First;
+      FCnPool.Delete(0);
+      Exit;
+    end
+  finally
+    MonitorExit(FCnPool);
+  end;
+  result := TADOConnection.Create(NIL);
+  result.ConnectionString := ConnectionString;
+  result.KeepConnection := TRUE;
+  result.LoginPrompt := FALSE;
+  result.Open;
+end;
+
+//procedure TdbGoDataManager.BeginTran;
+//begin
+//  if FTranCount = 0 then FConnection.BeginTrans;
+//  inc(FTranCount);
+//end;
+//
+//procedure TdbGoDataManager.Commit;
+//begin
+//  if (FTranCount>0) then
+//  begin
+//    Dec(FTranCount);
+//    if FTranCount= 0 then FConnection.CommitTrans;
+//  end;
+//end;
 
 
 function TdbGoDataManager.Execute(FuncName: String;
@@ -623,7 +682,7 @@ var
 begin
   LSp := TADOStoredProc.Create(nil);
   try
-    LSp.Connection := TdbGoDataManager.FConnection;
+    LSp.Connection := TdbGoDataManager.AdquireConnection;
     LSp.ProcedureName := FuncName;
    // LSP.Parameters.Refresh;
     with LSP.Parameters.AddParameter do
@@ -645,30 +704,40 @@ begin
     LSp.ExecProc;
     result := TValue.FromVariant(LSP.Parameters[0].Value);
   finally
+    TdbGoDataManager.RealeaseConnection(LSp.Connection);
     LSP.Free;
   end;
 end;
 
-procedure TdbGoDataManager.RollBack;
+//procedure TdbGoDataManager.RollBack;
+//begin
+//  if FTranCount > 0 then
+//      FConnection.RollbackTrans;
+//  FTranCount := 0;
+//end;
+//
+//function TdbGoDataManager.InTransaction;
+//begin
+//  result := FTranCount > 0;//FConnection.InTransaction;
+//end;
+
+class constructor TdbGoDataManager.create;
 begin
-  if FTranCount > 0 then
-      FConnection.RollbackTrans;
-  FTranCount := 0;
-end;
-
-function TdbGoDataManager.InTransaction;
-begin
-  result := FTranCount > 0;//FConnection.InTransaction;
-end;
-
-
-initialization
   TdbGoDataManager.FProviders := THashedStringList.Create;
-  TdbGoDataManager.FConnection := TADOConnection.Create(NIL);
-  TdbGoDataManager.FConnection.KeepConnection := TRUE;
   TdbGoDataManager.FProviders.CaseSensitive := FALSE;
+  TdbGoDataManager.FCnPool := TList<TADOConnection>.Create;
   Factory.Register(IDataManager, TdbGoDataManager);
-finalization
+end;
+
+class destructor TdbGoDataManager.destroy;
+var
+  i: integer;
+begin
   TdbGoDataManager.FProviders.Free;
-  TdbGoDataManager.FConnection.Free;
+  for i := 0 to FCnPool.Count -1  do
+    FCnPool[i].Free;
+  TdbGoDataManager.FCnPool.Free;
+end;
+
+
 end.
