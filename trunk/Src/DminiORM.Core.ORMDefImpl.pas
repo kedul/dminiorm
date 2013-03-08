@@ -240,7 +240,7 @@ var
   LDetailInfo: TRelationDescription;
   LDelegate: TLoadDelegate;
   LInf: IInterface;
-  LStateRec: PStateRec;
+  //LStateRec: PStateRec;
 
   function IsKeyColumn(AClassMember: TRttiMember): boolean;
   var
@@ -263,7 +263,7 @@ begin
       AMap.GetOnMapInitializeMethod.Invoke(AObject,
         [TValue.From<TDataRow>(Data.DataRow)]);
 
-    LStateRec := GetAditionalData(AObject);
+    //LStateRec := GetAditionalData(AObject);
 
     for LColumnRelation in AMap.GetColumnsMapInfo do
     begin
@@ -303,15 +303,15 @@ begin
                 LColumnRelation.ClassMember.Name]);
         end;
 
-        if (AMap.GetFieldValues = nil) then //and ((AMap.GetStateMode = smAll) or
-            //((AMap.GetStateMode = smKey) And IsKeyColumn(LColumnRelation.ClassMember))) then
-        begin
-          LStateRec.Data.Put(LColumnRelation.Column, LColumnValue)
-        end;
+//        if (AMap.GetFieldValues = nil) then //and ((AMap.GetStateMode = smAll) or
+//            //((AMap.GetStateMode = smKey) And IsKeyColumn(LColumnRelation.ClassMember))) then
+//        begin
+//           LStateRec.Data.Put(LColumnRelation.Column, LColumnValue)
+//        end;
 
     end;
 
-    LStateRec.State := osBrowse;
+   // LStateRec.State := osBrowse;
 
     for LDetailInfo in AMap.GetDetailsInfo do
     begin
@@ -355,6 +355,20 @@ begin
   result := Factory.Get<IObjectState>;
 end;
 
+//procedure log(text: String);
+//var
+//  F: TextFile ;
+//begin
+//  try
+//  Assign(F, 'log.txt');
+//  Append(F);
+//  Writeln(F, DateTimetoStr(now)+': '+ text);
+//  CloseFile(F);
+//  except
+//    raise Exception.Create('Error en log');
+//  end;
+//end;
+
 function TORMImpl.InternalLoad(ATypeInfo: PTypeInfo; Data: IDataReader;
   EOFChecker: TReaderEOF; OnLoad: TORMOnLoadValue): TValue;
 var
@@ -367,6 +381,7 @@ var
   LItemClass: TClass;
   LItemTypeInfo: PTypeInfo;
   LInterface: IInterface;
+  Lvalue: TValue;
 
 begin
   LType := RttiContext.GetType(ATypeInfo);
@@ -399,7 +414,7 @@ begin
         LItemClass := Factory.GetClassFor(TRttiInterfaceType(LType).GUID);
         if LItemClass = nil then
           raise Exception.Create('Unsupported type '+LType.QualifiedName);
-        LItemTypeInfo := LItemClass.ClassInfo;
+        LItemTypeInfo := LType.Handle; //LItemClass.ClassInfo;
         LMap := FMapManager.Get(RttiContext.GetType(LItemClass.ClassInfo),FCurrentProvider);
       end
       else
@@ -414,45 +429,67 @@ begin
       if Not Assigned(LMap) then
         raise Exception.Create('Can'' create a map info for class ' +
           LType.Name);
-
       while not Data.EOF and (not Assigned(EOFChecker) or
         (Assigned(EOFChecker) and not EOFChecker(Data))) do
       begin
+
         if FStack.Count > 0 then
           LObj := NewObject(LItemTypeInfo, FStack.Last)
         else
-          LObj :=  NewObject(LItemTypeInfo, NIL); //Factory.Get(LItemTypeInfo).AsObject;
+          LObj := NewObject(LItemTypeInfo, NIL); //Factory.Get(LItemTypeInfo).AsObject;
+
         LRecNo := Data.RecNo;
         FStack.Add(LObj);
         try
+
           FillObject(LObj, LMap, LType, Data);
+
           if Assigned(OnLoad) then
           begin
+
             if LType is TRttiInterfaceType  then
-              Lobj.GetInterface(IInterface, LInterface); //inc refCount
+            begin
+              if not LObj.GetInterface(TRttiInterfaceType(Ltype).GUID, LInterface)then
+                raise Exception.Create('No interface')  ;
+
+              TValue.MakeWithoutCopy(@Linterface, Ltype.Handle, LValue);
+           end
+           else
+              LValue := LObj;
             try
-              OnLoad(Lobj);
-            except
+              OnLoad(LValue);
               if LType is TRttiInterfaceType then
-                LInterface._Release;
+                  Lvalue := NIL;
+            except
+
+              if LType is TRttiInterfaceType then
+                Lvalue := NIL;
               raise;
             end;
           end;
         finally
           FStack.Delete(FStack.Count - 1);
         end;
-
         if LCollection = nil then
-          Exit(LObj);
+          if LType is TRttiInterfaceType  then
+            begin
+              if not LObj.GetInterface(TRttiInterfaceType(Ltype).GUID, LInterface)then
+                raise Exception.Create('No interface')  ;
+              Tvalue.MakeWithoutCopy(@Linterface, Ltype.Handle, Result);
+              LInterface:= NIL;
+              Exit;
+            end
+          else Exit(LObj);
+
+        LCollection.Add(LObj);
 
         if LRecNo = Data.RecNo then
           Data.Next;
-
-        LCollection.Add(LObj);
       end;
       result := LCollection.List;
       LCollection.Free;
     except
+     on e: exception do begin
       if LCollection <> nil then
       begin
         LCollection.List.Free;
@@ -460,7 +497,8 @@ begin
       end;
       if not (LType is TRttiInterfaceType) then
         LObj.Free;
-      raise;
+      raise Exception.Create('Redirigido.'+e.Message);
+     end;
     end;
   finally
     FCurrentReader := LSavedReader;
@@ -511,10 +549,14 @@ var
   LStateRec: PStateRec;
   LMap: IMapDefinition;
   LDetailInfo: TRelationDescription;
-
+  LInterface : IInterface;
+  LIsInterfaceType: Boolean;
 begin
+  result := Factory.Get(ATypeInfo).AsObject;
+  exit;
   LType := RttiContext.GetType(ATypeInfo);
-  if LType is TRttiInterfaceType then
+  LIsInterfaceType := LType is TRttiInterfaceType ;
+  if LIsInterfaceType then
   begin
     LClass := Factory.GetClassFor(TRttiInterfaceType(LType).GUID);
     if LClass = nil then
@@ -535,6 +577,12 @@ begin
   end;
 
   result := LSyncteticClass.Metaclass.Create;
+
+  if LIsInterfaceType then
+  begin
+    Linterface := TInterfacedObject(result);
+    LInterface._AddRef;
+  end;
 
   LMap := FMapManager.Get(RttiContext.GetType(LClass.ClassInfo));
   for LDetailInfo in LMap.GetDetailsInfo do
@@ -737,11 +785,11 @@ begin
           raise Exception.CreateFmt('Can''t find writer for object of class %s',
                     [LItemType.Name]);
 
-        if not FDataManager.InTransaction then
-        begin
-          FDataManager.BeginTran;
-          LTranStarter := TRUE;
-        end;
+//        if not FDataManager.InTransaction then
+//        begin
+//          FDataManager.BeginTran;
+//          LTranStarter := TRUE;
+//        end;
 
         LSaveResult := LWriter.Save(LRecordList.ToArray);
         for i := 0 to LRecordList.Count-1 do
@@ -755,17 +803,18 @@ begin
             LMap.GetAfterSave.Invoke(LObjList[i],[LIsNew])
         end;
 
+//        if LTranStarter And FDataManager.InTransaction then
+//          FDataManager.Commit;
+
       end;
     except
-      if LTranStarter And FDataManager.InTransaction then
-        FDataManager.RollBack;
+//      if LTranStarter And FDataManager.InTransaction then
+//        FDataManager.RollBack;
       raise;
     end;
   finally
     LRecordList.Free;
     LObjList.Free;
-    if LTranStarter And FDataManager.InTransaction then
-      FDataManager.Commit;
     if LList<>nil then begin
       LList.Free;
     end;
@@ -832,7 +881,6 @@ var
   LIOrm: IORM;
   LORM: TORMImpl;
   LList: TListInterface;
-
 begin
 
   if not FLoaded then

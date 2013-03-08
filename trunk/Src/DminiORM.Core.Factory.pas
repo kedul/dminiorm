@@ -148,11 +148,17 @@ begin
     else
       LClass := LType.AsInstance.MetaclassType;
 
+    for LMethod in LType.GetDeclaredMethods do
+      if (LMethod.IsConstructor) and (Length(LMethod.GetParameters) = 0) then
+      begin
+        result := LMethod.Invoke(LClass, []);
+        exit;
+      end;
     for LMethod in LType.GetMethods do
       if (LMethod.IsConstructor) and (Length(LMethod.GetParameters) = 0) then
       begin
         result := LMethod.Invoke(LClass, []);
-        break;
+        exit;
       end;
   finally
     LCtx.Free;
